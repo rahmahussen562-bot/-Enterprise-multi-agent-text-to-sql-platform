@@ -1,0 +1,69 @@
+{
+  "ddl": [
+    {
+      "table": "Album",
+      "ddl": "CREATE TABLE [Album] (\n    [AlbumId] INTEGER NOT NULL,\n    [Title] NVARCHAR(160) NOT NULL,\n    [ArtistId] INTEGER NOT NULL\n);"
+    },
+    {
+      "table": "Artist",
+      "ddl": "CREATE TABLE [Artist] (\n    [ArtistId] INTEGER NOT NULL,\n    [Name] NVARCHAR(120) NULL\n);"
+    },
+    {
+      "table": "Customer",
+      "ddl": "CREATE TABLE [Customer] (\n    [CustomerId] INTEGER NOT NULL,\n    [FirstName] NVARCHAR(40) NOT NULL,\n    [LastName] NVARCHAR(20) NOT NULL,\n    [Company] NVARCHAR(80) NULL,\n    [Address] NVARCHAR(70) NULL,\n    [City] NVARCHAR(40) NULL,\n    [State] NVARCHAR(40) NULL,\n    [Country] NVARCHAR(40) NULL,\n    [PostalCode] NVARCHAR(10) NULL,\n    [Phone] NVARCHAR(24) NULL,\n    [Fax] NVARCHAR(24) NULL,\n    [Email] NVARCHAR(60) NOT NULL,\n    [SupportRepId] INTEGER NULL\n);"
+    },
+    {
+      "table": "Employee",
+      "ddl": "CREATE TABLE [Employee] (\n    [EmployeeId] INTEGER NOT NULL,\n    [LastName] NVARCHAR(20) NOT NULL,\n    [FirstName] NVARCHAR(20) NOT NULL,\n    [Title] NVARCHAR(30) NULL,\n    [ReportsTo] INTEGER NULL,\n    [BirthDate] DATETIME NULL,\n    [HireDate] DATETIME NULL,\n    [Address] NVARCHAR(70) NULL,\n    [City] NVARCHAR(40) NULL,\n    [State] NVARCHAR(40) NULL,\n    [Country] NVARCHAR(40) NULL,\n    [PostalCode] NVARCHAR(10) NULL,\n    [Phone] NVARCHAR(24) NULL,\n    [Fax] NVARCHAR(24) NULL,\n    [Email] NVARCHAR(60) NULL\n);"
+    },
+    {
+      "table": "Genre",
+      "ddl": "CREATE TABLE [Genre] (\n    [GenreId] INTEGER NOT NULL,\n    [Name] NVARCHAR(120) NULL\n);"
+    },
+    {
+      "table": "Invoice",
+      "ddl": "CREATE TABLE [Invoice] (\n    [InvoiceId] INTEGER NOT NULL,\n    [CustomerId] INTEGER NOT NULL,\n    [InvoiceDate] DATETIME NOT NULL,\n    [BillingAddress] NVARCHAR(70) NULL,\n    [BillingCity] NVARCHAR(40) NULL,\n    [BillingState] NVARCHAR(40) NULL,\n    [BillingCountry] NVARCHAR(40) NULL,\n    [BillingPostalCode] NVARCHAR(10) NULL,\n    [Total] NUMERIC(10,2) NOT NULL\n);"
+    },
+    {
+      "table": "InvoiceLine",
+      "ddl": "CREATE TABLE [InvoiceLine] (\n    [InvoiceLineId] INTEGER NOT NULL,\n    [InvoiceId] INTEGER NOT NULL,\n    [TrackId] INTEGER NOT NULL,\n    [UnitPrice] NUMERIC(10,2) NOT NULL,\n    [Quantity] INTEGER NOT NULL\n);"
+    },
+    {
+      "table": "MediaType",
+      "ddl": "CREATE TABLE [MediaType] (\n    [MediaTypeId] INTEGER NOT NULL,\n    [Name] NVARCHAR(120) NULL\n);"
+    },
+    {
+      "table": "Playlist",
+      "ddl": "CREATE TABLE [Playlist] (\n    [PlaylistId] INTEGER NOT NULL,\n    [Name] NVARCHAR(120) NULL\n);"
+    },
+    {
+      "table": "PlaylistTrack",
+      "ddl": "CREATE TABLE [PlaylistTrack] (\n    [PlaylistId] INTEGER NOT NULL,\n    [TrackId] INTEGER NOT NULL\n);"
+    },
+    {
+      "table": "Track",
+      "ddl": "CREATE TABLE [Track] (\n    [TrackId] INTEGER NOT NULL,\n    [Name] NVARCHAR(200) NOT NULL,\n    [AlbumId] INTEGER NULL,\n    [MediaTypeId] INTEGER NOT NULL,\n    [GenreId] INTEGER NULL,\n    [Composer] NVARCHAR(220) NULL,\n    [Milliseconds] INTEGER NOT NULL,\n    [Bytes] INTEGER NULL,\n    [UnitPrice] NUMERIC(10,2) NOT NULL\n);"
+    }
+  ],
+  "documentation": [
+    {
+      "text": "InvoiceLine total sales is calculated as UnitPrice * Quantity."
+    },
+    {
+      "text": "Customer Country values are stored in full English name (e.g. 'Brazil', 'Germany', 'USA')."
+    },
+    {
+      "text": "Top selling artists should be ranked by SUM(InvoiceLine.UnitPrice * InvoiceLine.Quantity)."
+    }
+  ],
+  "sql_pairs": [
+    {
+      "question": "What are the total sales for customers in Brazil?",
+      "sql": "WITH BrazilSales AS (\n    SELECT c.Country, SUM(i.Total) AS TotalRevenue\n    FROM Customer c\n    JOIN Invoice i ON c.CustomerId = i.CustomerId\n    WHERE c.Country = 'Brazil'\n    GROUP BY c.Country\n)\nSELECT * FROM BrazilSales;"
+    },
+    {
+      "question": "Find the top 5 artists with the most track sales",
+      "sql": "WITH TopArtists AS (\n    SELECT art.Name AS ArtistName, ROUND(SUM(il.UnitPrice * il.Quantity), 2) AS TotalSales\n    FROM Artist art\n    JOIN Album a ON art.ArtistId = a.ArtistId\n    JOIN Track t ON a.AlbumId = t.AlbumId\n    JOIN InvoiceLine il ON t.TrackId = il.TrackId\n    GROUP BY art.ArtistId, art.Name\n    ORDER BY TotalSales DESC\n    LIMIT 5\n)\nSELECT * FROM TopArtists;"
+    }
+  ]
+}

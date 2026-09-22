@@ -1,0 +1,18 @@
+# Core Enterprise Dependencies
+streamlit>=1.35.0
+sqlglot>=23.0.0
+pandas>=2.0.0
+plotly>=5.18.0
+openpyxl>=3.1.2
+xlsxwriter>=3.1.9
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Vector Store and Text-to-SQL Framework
+vanna>=0.5.0
+chromadb>=0.4.24
+
+# Optional LLM & DB Adapters
+google-genai>=0.1.0
+openai>=1.12.0
+psycopg2-binary>=2.9.9
