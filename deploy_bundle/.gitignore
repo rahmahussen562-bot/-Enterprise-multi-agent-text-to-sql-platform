@@ -1,0 +1,49 @@
+# =============================================================================
+# Git Ignore Rules for Enterprise Deployment Bundle
+# =============================================================================
+
+# Production Credentials & Environment Files
+.env
+.env.*
+!.env.example
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Local Database Stores & Data Dumps
+*.db
+*.sqlite
+*.sqlite3
+data/
+data/*.db
+data/semantic_store/
+
+# Exported Data Artifacts
+*.csv
+*.xlsx
+query_results.*
+
+# IDE & Operating System Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs & Temporary Files
+*.log
+tmp/
+temp/
