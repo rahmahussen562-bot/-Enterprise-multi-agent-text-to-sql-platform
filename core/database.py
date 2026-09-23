@@ -1,59 +1,107 @@
 """
-Enterprise Microsoft SQL Server (T-SQL) database engine with pyodbc.
-Implements metadata extraction from INFORMATION_SCHEMA filtered strictly by RBAC scope,
-T-SQL value probing, and resilient connection management.
+Enterprise Microsoft SQL Server (T-SQL) Database Engine via pyodbc.
+Implements dynamic driver discovery, live schema introspection via INFORMATION_SCHEMA,
+safe parameterized T-SQL value probing, and resilient local emulation fallback.
 """
 import contextlib
 import logging
 import sqlite3
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from core.config import DatabaseConfig, get_config
+from core.config import DatabaseConfig, get_config, resolve_best_odbc_driver
 
 logger = logging.getLogger("TextToSQL.Database")
 
 
-class DatabaseEngine:
+class MSSQLDatabaseEngine:
     """Enterprise Microsoft SQL Server (T-SQL) database adapter."""
 
     def __init__(self, config: Optional[DatabaseConfig] = None):
         self.config = config or get_config().db
         self._local = threading.local()
         self._use_pyodbc: Optional[bool] = None
+        self._detected_driver: str = self.config.driver or resolve_best_odbc_driver()
+        self._last_latency_ms: float = 0.0
+        self._connection_mode: str = "INITIALIZING"
 
     @property
     def dialect(self) -> str:
         return "tsql"
 
-    def test_connection(self) -> Tuple[bool, str]:
-        """Verify database connectivity and return status details."""
-        # 1. Attempt Microsoft SQL Server via pyodbc
+    @property
+    def detected_driver(self) -> str:
+        return self._detected_driver
+
+    @property
+    def connection_mode(self) -> str:
+        return self._connection_mode
+
+    @property
+    def last_latency_ms(self) -> float:
+        return self._last_latency_ms
+
+    def test_connection(self) -> Tuple[bool, str, float, str]:
+        """
+        Verify database connectivity, benchmark round-trip latency, and report mode.
+        Returns: (is_connected: bool, message: str, latency_ms: float, mode: str)
+        """
+        # 1. Attempt Live Microsoft SQL Server via pyodbc
         try:
             import pyodbc
             conn_str = self.config.get_odbc_connection_string()
+            t_start = time.perf_counter()
+
             with pyodbc.connect(conn_str, timeout=self.config.connection_timeout_sec) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT @@VERSION;")
+                cursor.execute("SELECT @@VERSION, DB_NAME(), CURRENT_USER, @@SERVERNAME;")
                 row = cursor.fetchone()
-                version = row[0].split("\n")[0] if row else "Microsoft SQL Server"
+                latency_ms = (time.perf_counter() - t_start) * 1000
+
+                raw_version = row[0].split("\n")[0] if row else "Microsoft SQL Server"
+                db_name = row[1] if row and len(row) > 1 else self.config.database
+                user_name = row[2] if row and len(row) > 2 else "Unknown"
+                srv_name = row[3] if row and len(row) > 3 else self.config.server
+
                 self._use_pyodbc = True
-                return True, f"MS SQL Server connected: {version}"
+                self._connection_mode = "LIVE_MSSQL"
+                self._last_latency_ms = latency_ms
+
+                return (
+                    True,
+                    f"Connected to MS SQL Server '{srv_name}' [DB: {db_name}, User: {user_name}] ({raw_version})",
+                    latency_ms,
+                    "LIVE_MSSQL"
+                )
+
         except Exception as odbc_err:
-            logger.info(f"pyodbc connection unavailable ({odbc_err}). Using resilient T-SQL local engine.")
+            logger.info(f"pyodbc connection attempt skipped/failed ({odbc_err}). Using resilient T-SQL local engine.")
             self._use_pyodbc = False
 
         # 2. Local T-SQL Emulation Engine
         try:
+            t_start = time.perf_counter()
             with self._get_sqlite_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT sqlite_version();")
                 ver = cursor.fetchone()[0]
-                return True, f"T-SQL Local Engine Ready (SQLite v{ver} Storage: {self.config.sqlite_path})"
+                latency_ms = (time.perf_counter() - t_start) * 1000
+
+                self._connection_mode = "MOCK_EMULATOR"
+                self._last_latency_ms = latency_ms
+
+                return (
+                    True,
+                    f"T-SQL Local Engine Ready (SQLite v{ver} Storage: {self.config.sqlite_path})",
+                    latency_ms,
+                    "MOCK_EMULATOR"
+                )
         except Exception as e:
-            return False, f"Database initialization error: {str(e)}"
+            self._connection_mode = "ERROR"
+            return False, f"Database initialization error: {str(e)}", 0.0, "ERROR"
 
     @contextlib.contextmanager
     def get_connection(self):
@@ -142,7 +190,7 @@ class DatabaseEngine:
         return f"CREATE TABLE [{table_name}] (\n" + ",\n".join(col_defs) + "\n);"
 
     def get_all_ddls(self, authorized_tables: Optional[List[str]] = None) -> Dict[str, str]:
-        """Return table_name -> CREATE TABLE DDL filtered by authorization."""
+        """Return table_name -> CREATE TABLE DDL filtered strictly by authorization."""
         tables = self.get_table_names(authorized_tables=authorized_tables)
         return {t: self.get_table_schema_ddl(t) for t in tables}
 
@@ -179,7 +227,7 @@ class DatabaseEngine:
         return cols
 
     def get_foreign_keys(self, authorized_tables: Optional[List[str]] = None) -> List[Dict[str, str]]:
-        """Fetch foreign key constraints filtered by active user scope."""
+        """Fetch foreign key constraints filtered strictly by active user scope."""
         fks: List[Dict[str, str]] = []
         tables = self.get_table_names(authorized_tables=authorized_tables)
         auth_set = {t.lower() for t in tables}
@@ -274,7 +322,6 @@ class DatabaseEngine:
         timeout = timeout_sec or self.config.query_timeout_sec
         result_container: Dict[str, Any] = {"df": None, "error": None}
 
-        # Adapt T-SQL queries for local emulation engine if pyodbc is not connected
         exec_sql = sql
         if not self._use_pyodbc:
             exec_sql = self._adapt_tsql_for_emulation(sql)
@@ -309,3 +356,7 @@ class DatabaseEngine:
             return expression.sql(dialect="sqlite")
         except Exception:
             return sql
+
+
+# Compatibility Alias
+DatabaseEngine = MSSQLDatabaseEngine
