@@ -149,8 +149,17 @@ class MSSQLDatabaseEngine:
         """)
         conn.commit()
 
-    def get_table_names(self, authorized_tables: Optional[List[str]] = None) -> List[str]:
+    def get_table_names(self, authorized_tables: Optional[Any] = None) -> List[str]:
         """Fetch list of user table names filtered strictly by RBAC authorization."""
+        auth_list = None
+        if authorized_tables is not None:
+            if hasattr(authorized_tables, "allowed_tables"):
+                auth_list = authorized_tables.allowed_tables
+            elif hasattr(authorized_tables, "authorized_tables"):
+                auth_list = authorized_tables.authorized_tables
+            elif isinstance(authorized_tables, (list, tuple, set)):
+                auth_list = list(authorized_tables)
+
         tables: List[str] = []
         try:
             with self.get_connection() as conn:
@@ -175,28 +184,36 @@ class MSSQLDatabaseEngine:
         except Exception as e:
             logger.warning(f"Error fetching table names: {e}")
 
-        if authorized_tables is not None:
-            auth_set = {t.lower() for t in authorized_tables}
-            return [t for t in tables if t.lower() in auth_set]
+        if auth_list is not None:
+            auth_set = {t.strip("[]\"'").lower() for t in auth_list}
+            return [t for t in tables if t.strip("[]\"'").lower() in auth_set]
         return tables
 
-    def get_table_schema_ddl(self, table_name: str) -> str:
-        """Fetch CREATE TABLE DDL formatted in T-SQL standard."""
-        cols = self.get_table_columns_info(table_name)
+    def get_table_schema_ddl(self, table_name: str, authorized_tables: Optional[Any] = None) -> str:
+        """Fetch CREATE TABLE DDL formatted in T-SQL standard with RBAC enforcement."""
+        clean_tbl = table_name.strip("[]\"'")
+        if authorized_tables is not None:
+            auth_list = getattr(authorized_tables, "allowed_tables", getattr(authorized_tables, "authorized_tables", authorized_tables))
+            if isinstance(auth_list, (list, tuple, set)):
+                auth_set = {t.strip("[]\"'").lower() for t in auth_list}
+                if clean_tbl.lower() not in auth_set:
+                    raise PermissionError(f"SecurityViolationException: Table [{clean_tbl}] is unauthorized for active session.")
+
+        cols = self.get_table_columns_info(clean_tbl)
         if not cols:
-            return f"CREATE TABLE [{table_name}] ();"
+            return f"CREATE TABLE [{clean_tbl}] ();"
 
         col_defs = []
         for c in cols:
             null_str = "NOT NULL" if c["notnull"] else "NULL"
             col_defs.append(f"    [{c['name']}] {c['type']} {null_str}")
 
-        return f"CREATE TABLE [{table_name}] (\n" + ",\n".join(col_defs) + "\n);"
+        return f"CREATE TABLE [{clean_tbl}] (\n" + ",\n".join(col_defs) + "\n);"
 
-    def get_all_ddls(self, authorized_tables: Optional[List[str]] = None) -> Dict[str, str]:
+    def get_all_ddls(self, authorized_tables: Optional[Any] = None) -> Dict[str, str]:
         """Return table_name -> CREATE TABLE DDL filtered strictly by authorization."""
         tables = self.get_table_names(authorized_tables=authorized_tables)
-        return {t: self.get_table_schema_ddl(t) for t in tables}
+        return {t: self.get_table_schema_ddl(t, authorized_tables=authorized_tables) for t in tables}
 
     def get_table_columns_info(self, table_name: str) -> List[Dict[str, Any]]:
         """Return list of column metadata for a given table from INFORMATION_SCHEMA."""
@@ -278,14 +295,24 @@ class MSSQLDatabaseEngine:
         table_name: str,
         column_name: str,
         limit: int = 5,
-        pattern: Optional[str] = None
+        pattern: Optional[str] = None,
+        authorized_tables: Optional[Any] = None
     ) -> List[str]:
         """
         Active Data Reconnaissance probe using T-SQL standard:
         SELECT DISTINCT TOP {limit} [{col}] FROM [{table}] WHERE ...
+        Strictly enforces RBAC authorized tables.
         """
-        clean_tbl = table_name.strip("[]")
-        clean_col = column_name.strip("[]")
+        clean_tbl = table_name.strip("[]\"'")
+        clean_col = column_name.strip("[]\"'")
+
+        if authorized_tables is not None:
+            auth_list = getattr(authorized_tables, "allowed_tables", getattr(authorized_tables, "authorized_tables", authorized_tables))
+            if isinstance(auth_list, (list, tuple, set)):
+                auth_set = {t.strip("[]\"'").lower() for t in auth_list}
+                if clean_tbl.lower() not in auth_set:
+                    logger.warning(f"Unauthorized probe attempt blocked on table: {clean_tbl}")
+                    return []
 
         valid_tables = self.get_table_names()
         if clean_tbl not in valid_tables:

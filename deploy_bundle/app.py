@@ -185,7 +185,18 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Database Gateway Status")
-    conn_ok, conn_msg, latency_ms, conn_mode = db_engine.test_connection()
+    # Safe dynamic unpacking of test_connection() results (supports 2, 3, or 4 items)
+    conn_result = db_engine.test_connection()
+    if isinstance(conn_result, (tuple, list)):
+        conn_ok = bool(conn_result[0]) if len(conn_result) > 0 else False
+        conn_msg = str(conn_result[1]) if len(conn_result) > 1 else ""
+        latency_ms = float(conn_result[2]) if len(conn_result) > 2 and isinstance(conn_result[2], (int, float)) else getattr(db_engine, "last_latency_ms", 0.0)
+        conn_mode = str(conn_result[3]) if len(conn_result) > 3 else getattr(db_engine, "connection_mode", "UNKNOWN")
+    else:
+        conn_ok = bool(conn_result)
+        conn_msg = "Database connection operational." if conn_ok else "Database connection failed."
+        latency_ms = getattr(db_engine, "last_latency_ms", 0.0)
+        conn_mode = getattr(db_engine, "connection_mode", "UNKNOWN")
     if conn_mode == "LIVE_MSSQL":
         st.markdown(f"<span class='corp-badge badge-success'>[LIVE MSSQL: {db_engine.config.server}/{db_engine.config.database}]</span>", unsafe_allow_html=True)
     elif conn_mode == "MOCK_EMULATOR":
@@ -204,7 +215,8 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Authorized Table Whitelist")
     st.caption("Row & Table-Level Control (RLC) enforced at AST Guardian")
-    for tbl in active_user.authorized_tables:
+    allowed_tables = getattr(active_user, "allowed_tables", getattr(active_user, "authorized_tables", []))
+    for tbl in allowed_tables:
         st.markdown(f"- `[{tbl}]`")
 
     st.markdown("---")
@@ -255,8 +267,8 @@ if "sales" in active_user.username:
         if st.button("Top 10 Invoices by Revenue", use_container_width=True):
             sample_prompt = "Find the top 10 invoices ranked by total billing amount."
     with col3:
-        if st.button("Monthly Commercial Sales Trend 2024", use_container_width=True):
-            sample_prompt = "Show the monthly revenue trend and invoice count across 2024."
+        if st.button("Net Profit & Bank Fee Breakdown", use_container_width=True):
+            sample_prompt = "Calculate Gross Revenue, Bank Fees (2.5%), Partner Share (70%), and Company Net Profit (30%) across InvoiceLine."
 else:
     with col1:
         if st.button("Catalog Tracks in Rock Genre", use_container_width=True):

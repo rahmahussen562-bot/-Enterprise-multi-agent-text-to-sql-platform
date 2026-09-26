@@ -51,6 +51,12 @@ class TestCorporateAuth(unittest.TestCase):
         filtered = filter_authorized_tables(sales_user, all_tables)
         self.assertEqual(sorted(filtered), sorted(["Customer", "Invoice", "InvoiceLine"]))
 
+    def test_allowed_tables_property(self):
+        sales_user = authenticate("sales_analyst", "Sales@2026!")
+        self.assertEqual(sales_user.allowed_tables, ["Customer", "Invoice", "InvoiceLine"])
+        inv_user = authenticate("inventory_lead", "Ops@2026!")
+        self.assertEqual(inv_user.allowed_tables, ["Track", "Album", "Artist", "Genre", "MediaType"])
+
 
 if __name__ == "__main__":
     unittest.main()

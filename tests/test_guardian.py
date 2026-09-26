@@ -92,6 +92,19 @@ class TestASTGuardianAgent(unittest.TestCase):
         self.assertFalse(res.is_valid)
         self.assertEqual(res.critique["type"], "RBAC_AUTHORIZATION_VIOLATION")
         self.assertIn("track", res.critique["message"].lower())
+        self.assertIn("SecurityViolationException: Table [track] is unauthorized for role [sales_analyst]", res.critique["message"])
+
+    def test_security_violation_exception_raised(self):
+        from agents.guardian import SecurityViolationException
+        unauthorized_sql = "SELECT TOP 10 * FROM [Track];"
+        with self.assertRaises(SecurityViolationException) as ctx:
+            self.guardian.audit(
+                unauthorized_sql,
+                authorized_tables=["Customer", "Invoice"],
+                username="sales_analyst",
+                raise_on_violation=True
+            )
+        self.assertIn("Table [track] is unauthorized for role [sales_analyst]", str(ctx.exception))
 
     def test_detects_cartesian_product(self):
         cartesian_sql = "SELECT * FROM [Customer] JOIN [Invoice];"

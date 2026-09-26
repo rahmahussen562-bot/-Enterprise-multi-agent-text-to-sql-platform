@@ -74,6 +74,21 @@ class SQLCoderAgent:
             for ex in similar_examples:
                 parts.append(f"Q: {ex.get('question')}\nSQL: {ex.get('sql')}\n")
 
+        financial_keywords = {"revenue", "profit", "margin", "bank", "fee", "deduction", "share", "partner", "earning", "gross", "net"}
+        query_words = set(re.findall(r"\b\w+\b", question.lower()))
+        if query_words.intersection(financial_keywords):
+            parts.extend([
+                "### CORPORATE REVENUE & FINANCIAL BUSINESS RULES:",
+                "When calculating revenue, profit, margin, or deductions, strictly apply the following exact formulas:",
+                "- Gross Revenue = SUM([UnitPrice] * [Quantity])",
+                "- Bank Processing Fee = Gross Revenue * 0.025 (2.5% transaction deduction)",
+                "- Net Revenue = Gross Revenue * 0.975 (Gross Revenue after 2.5% bank fee)",
+                "- Partner Share = Net Revenue * 0.70 (70% of Net Revenue disbursed to partners)",
+                "- Company Net Profit = Net Revenue * 0.30 (30% of Net Revenue retained: SUM([UnitPrice] * [Quantity]) * 0.975 * 0.30)",
+                "Example T-SQL expression: ROUND(SUM([UnitPrice] * [Quantity]) * 0.975 * 0.30, 2) AS [CompanyNetProfit]",
+                ""
+            ])
+
         if critique:
             parts.extend([
                 "### PREVIOUS ATTEMPT DIAGNOSTIC CRITIQUE (SELF-HEALING REQUIRED):",
@@ -214,6 +229,31 @@ SELECT TOP 100 * FROM [CountrySales];"""
     [Email] 
 FROM [Customer] 
 WHERE [Country] {op} {val_pattern};"""
+
+            # Corporate Revenue & Profit Calculation Rules
+            if any(k in q_lower for k in ["profit", "margin", "bank", "fee", "net revenue", "gross revenue", "partner share"]):
+                if "invoiceline" in tables:
+                    return """WITH [RevenueCalculations] AS (
+    SELECT 
+        ROUND(SUM([UnitPrice] * [Quantity]), 2) AS [GrossRevenue],
+        ROUND(SUM([UnitPrice] * [Quantity]) * 0.025, 2) AS [BankFee],
+        ROUND(SUM([UnitPrice] * [Quantity]) * 0.975, 2) AS [NetRevenue],
+        ROUND(SUM([UnitPrice] * [Quantity]) * 0.975 * 0.70, 2) AS [PartnerShare],
+        ROUND(SUM([UnitPrice] * [Quantity]) * 0.975 * 0.30, 2) AS [CompanyNetProfit]
+    FROM [InvoiceLine]
+)
+SELECT TOP 10 * FROM [RevenueCalculations];"""
+                elif "invoice" in tables:
+                    return """WITH [InvoiceProfit] AS (
+    SELECT 
+        ROUND(SUM([Total]), 2) AS [GrossRevenue],
+        ROUND(SUM([Total]) * 0.025, 2) AS [BankFee],
+        ROUND(SUM([Total]) * 0.975, 2) AS [NetRevenue],
+        ROUND(SUM([Total]) * 0.975 * 0.70, 2) AS [PartnerShare],
+        ROUND(SUM([Total]) * 0.975 * 0.30, 2) AS [CompanyNetProfit]
+    FROM [Invoice]
+)
+SELECT TOP 10 * FROM [InvoiceProfit];"""
 
             # Invoices / Sales trend
             if "invoice" in tables:

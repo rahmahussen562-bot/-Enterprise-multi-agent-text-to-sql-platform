@@ -16,8 +16,11 @@ from core.auth import UserSession, authenticate
 from core.config import AgentConfig, DatabaseConfig, LLMConfig, SystemConfig, get_config
 from core.database import DatabaseEngine
 from core.vanna_client import VannaTextToSQLEngine
-from utils.db_seeder import seed_database
-from utils.visualizer import AutonomousVisualizer
+
+try:
+    from agents.visualizer import AutonomousVisualizer
+except ImportError:
+    from utils.visualizer import AutonomousVisualizer
 
 # -----------------------------------------------------------------------------
 # Streamlit Application Configuration
@@ -83,16 +86,6 @@ st.markdown("""
         border-radius: 4px;
         margin: 8px 0;
     }
-    
-    /* Login Container Card */
-    .login-box {
-        max-width: 480px;
-        margin: 40px auto;
-        padding: 30px;
-        background-color: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 8px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -108,10 +101,6 @@ if "config" not in st.session_state:
 
 if "user" not in st.session_state:
     st.session_state.user = None
-
-if "db_seeded" not in st.session_state:
-    seed_database(st.session_state.config.db.sqlite_path, seed_vanna=True)
-    st.session_state.db_seeded = True
 
 db_engine = DatabaseEngine(st.session_state.config.db)
 vanna_engine = VannaTextToSQLEngine(st.session_state.config.llm, st.session_state.config.vector)
@@ -155,8 +144,8 @@ if st.session_state.user is None:
         st.markdown("""
         <div style="font-size: 0.8rem; color: #94a3b8; line-height: 1.6;">
             <strong>Directory Credentials for Evaluation:</strong><br>
-            • <code>sales_analyst</code> / <code>Sales@2026!</code> (Commercial Scope: Customer, Invoice, InvoiceLine)<br>
-            • <code>inventory_lead</code> / <code>Ops@2026!</code> (Catalog Scope: Track, Album, Artist, Genre, MediaType)
+            - <code>sales_analyst</code> / <code>Sales@2026!</code> (Commercial Scope: Customer, Invoice, InvoiceLine)<br>
+            - <code>inventory_lead</code> / <code>Ops@2026!</code> (Catalog Scope: Track, Album, Artist, Genre, MediaType)
         </div>
         """, unsafe_allow_html=True)
 
@@ -172,7 +161,7 @@ active_user: UserSession = st.session_state.user
 with st.sidebar:
     st.markdown("""
     <div style="padding: 10px 0; border-bottom: 1px solid #334155; margin-bottom: 12px;">
-        <span class="corp-badge badge-primary">SQL SERVER (T-SQL)</span>
+        <span class="corp-badge badge-primary">[GATEWAY CONTROL]</span>
         <div style="font-size: 0.95rem; font-weight: 700; margin-top: 6px; color: #f8fafc;">
             MANAGEMENT CONSOLE
         </div>
@@ -195,18 +184,40 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.subheader("Authorized Table Whitelist")
-    st.caption("Row & Table-Level Control (RLC) enforced at AST Guardian")
-    for tbl in active_user.authorized_tables:
-        st.markdown(f"- `[{tbl}]`")
+    st.subheader("Database Gateway Status")
+    # Safe dynamic unpacking of test_connection() results (supports 2, 3, or 4 items)
+    conn_result = db_engine.test_connection()
+    if isinstance(conn_result, (tuple, list)):
+        conn_ok = bool(conn_result[0]) if len(conn_result) > 0 else False
+        conn_msg = str(conn_result[1]) if len(conn_result) > 1 else ""
+        latency_ms = float(conn_result[2]) if len(conn_result) > 2 and isinstance(conn_result[2], (int, float)) else getattr(db_engine, "last_latency_ms", 0.0)
+        conn_mode = str(conn_result[3]) if len(conn_result) > 3 else getattr(db_engine, "connection_mode", "UNKNOWN")
+    else:
+        conn_ok = bool(conn_result)
+        conn_msg = "Database connection operational." if conn_ok else "Database connection failed."
+        latency_ms = getattr(db_engine, "last_latency_ms", 0.0)
+        conn_mode = getattr(db_engine, "connection_mode", "UNKNOWN")
+    if conn_mode == "LIVE_MSSQL":
+        st.markdown(f"<span class='corp-badge badge-success'>[LIVE MSSQL: {db_engine.config.server}/{db_engine.config.database}]</span>", unsafe_allow_html=True)
+    elif conn_mode == "MOCK_EMULATOR":
+        st.markdown("<span class='corp-badge badge-info'>[MOCK EMULATOR: LOCAL STORAGE]</span>", unsafe_allow_html=True)
+    else:
+        st.markdown("<span class='corp-badge badge-danger'>[CONNECTION_ERROR]</span>", unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style="font-size: 0.78rem; color: #94a3b8; margin-top: 6px; line-height: 1.5;">
+        <div><strong>ODBC Driver:</strong> <code>{db_engine.detected_driver}</code></div>
+        <div><strong>Round-Trip Latency:</strong> <code>{latency_ms:.1f} ms</code></div>
+        <div style="margin-top: 2px; color: #cbd5e1;">{conn_msg}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown("---")
-    st.subheader("Database Engine Status")
-    conn_ok, conn_msg = db_engine.test_connection()
-    if conn_ok:
-        st.markdown(f"<span class='corp-badge badge-success'>CONNECTED</span> {conn_msg}", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<span class='corp-badge badge-danger'>ERROR</span> {conn_msg}", unsafe_allow_html=True)
+    st.subheader("Authorized Table Whitelist")
+    st.caption("Row & Table-Level Control (RLC) enforced at AST Guardian")
+    allowed_tables = getattr(active_user, "allowed_tables", getattr(active_user, "authorized_tables", []))
+    for tbl in allowed_tables:
+        st.markdown(f"- `[{tbl}]`")
 
     st.markdown("---")
     st.subheader("Governance Parameters")
@@ -256,8 +267,8 @@ if "sales" in active_user.username:
         if st.button("Top 10 Invoices by Revenue", use_container_width=True):
             sample_prompt = "Find the top 10 invoices ranked by total billing amount."
     with col3:
-        if st.button("Monthly Commercial Sales Trend 2024", use_container_width=True):
-            sample_prompt = "Show the monthly revenue trend and invoice count across 2024."
+        if st.button("Net Profit & Bank Fee Breakdown", use_container_width=True):
+            sample_prompt = "Calculate Gross Revenue, Bank Fees (2.5%), Partner Share (70%), and Company Net Profit (30%) across InvoiceLine."
 else:
     with col1:
         if st.button("Catalog Tracks in Rock Genre", use_container_width=True):
@@ -273,7 +284,7 @@ else:
 # -----------------------------------------------------------------------------
 # Chat Conversation History
 # -----------------------------------------------------------------------------
-for msg in st.session_state.messages:
+for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "sql" in msg and msg["sql"]:
@@ -281,7 +292,7 @@ for msg in st.session_state.messages:
         if "df" in msg and isinstance(msg["df"], pd.DataFrame) and not msg["df"].empty:
             st.dataframe(msg["df"], use_container_width=True)
             if "fig" in msg and msg["fig"]:
-                st.plotly_chart(msg["fig"], use_container_width=True)
+                st.plotly_chart(msg["fig"], use_container_width=True, key=f"hist_chart_{idx}")
 
 
 # -----------------------------------------------------------------------------
@@ -316,12 +327,25 @@ if prompt:
             elif event.status == "failed":
                 status_box.write(f"{badge} POLICY VIOLATION / FAILURE: {event.message}")
 
-        # Execute Pipeline passing active UserSession for RBAC enforcement
-        result: OrchestrationResult = controller.execute_pipeline(
-            prompt,
-            user_session=active_user,
-            on_event=on_agent_event
-        )
+        # Execute Pipeline with graceful network error trapping
+        try:
+            result: OrchestrationResult = controller.execute_pipeline(
+                prompt,
+                user_session=active_user,
+                on_event=on_agent_event
+            )
+        except Exception as conn_err:
+            status_box.update(label="[DATABASE_CONNECTION_ERROR] Network Failure", state="error", expanded=True)
+            st.error(f"[DATABASE_CONNECTION_ERROR] Communication with SQL Server failed: {str(conn_err)}")
+            result = OrchestrationResult(
+                success=False,
+                final_sql="",
+                df=pd.DataFrame(),
+                executive_narrative="",
+                events=[],
+                retry_history=[],
+                error_message=f"[DATABASE_CONNECTION_ERROR] {str(conn_err)}"
+            )
 
         if result.success:
             status_box.update(label="[ORCHESTRATOR] Pipeline Complete: Execution and Sanity Verification Passed", state="complete", expanded=False)
@@ -342,8 +366,9 @@ if prompt:
         # ---------------------------------------------------------------------
         # Synthesized T-SQL Query Output
         # ---------------------------------------------------------------------
-        st.markdown("#### [SYNTHESIZED T-SQL QUERY]")
-        st.code(result.final_sql, language="sql")
+        if result.final_sql:
+            st.markdown("#### [SYNTHESIZED T-SQL QUERY]")
+            st.code(result.final_sql, language="sql")
 
         # ---------------------------------------------------------------------
         # Tabular Data Results & Visualizations
@@ -368,7 +393,7 @@ if prompt:
             fig = visualizer.generate_chart(result.df)
             if fig:
                 st.markdown("#### [AUTONOMOUS VISUAL ANALYTICS]")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key=f"live_chart_{len(st.session_state.messages)}")
 
             # Enterprise Data Export
             st.markdown("##### Data Export Utility")
@@ -380,7 +405,8 @@ if prompt:
                     data=csv_bytes,
                     file_name="query_results.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    use_container_width=True,
+                    key=f"dl_csv_{len(st.session_state.messages)}"
                 )
             with exp_c2:
                 excel_buffer = io.BytesIO()
@@ -396,7 +422,8 @@ if prompt:
                     data=excel_buffer.getvalue(),
                     file_name="query_results.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    use_container_width=True,
+                    key=f"dl_xlsx_{len(st.session_state.messages)}"
                 )
 
             # Closed-Loop Active Learning

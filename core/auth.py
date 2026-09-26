@@ -16,6 +16,11 @@ class UserSession:
     rlc_description: str
     authenticated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"))
 
+    @property
+    def allowed_tables(self) -> List[str]:
+        """Alias for authorized_tables ensuring strict RBAC compatibility."""
+        return self.authorized_tables
+
 
 # Hardcoded corporate identity registry
 _CORPORATE_USERS: Dict[str, Dict[str, str]] = {
@@ -67,7 +72,8 @@ def is_table_authorized(user: UserSession, table_name: str) -> bool:
     if "." in clean_name:
         clean_name = clean_name.split(".")[-1]
 
-    whitelist_lower = {t.lower() for t in user.authorized_tables}
+    tables = getattr(user, "allowed_tables", getattr(user, "authorized_tables", []))
+    whitelist_lower = {t.lower() for t in tables}
     return clean_name.lower() in whitelist_lower
 
 
@@ -75,5 +81,6 @@ def filter_authorized_tables(user: UserSession, tables: List[str]) -> List[str]:
     """
     Filter a list of database tables strictly to the user's authorized scope.
     """
-    whitelist_lower = {t.lower() for t in user.authorized_tables}
+    user_tables = getattr(user, "allowed_tables", getattr(user, "authorized_tables", []))
+    whitelist_lower = {t.lower() for t in user_tables}
     return [t for t in tables if t.lower() in whitelist_lower]

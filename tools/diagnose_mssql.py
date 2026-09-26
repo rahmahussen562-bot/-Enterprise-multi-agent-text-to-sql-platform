@@ -95,13 +95,13 @@ def run_diagnostics():
         # Diagnosis A: SSL Certificate Failure on Driver 18
         if "SSL" in err_str or "certificate" in err_str.lower() or "08001" in err_str:
             if "ODBC Driver 18" in cfg.driver:
-                print("  • Issue: ODBC Driver 18 mandates encryption by default and rejects untrusted certs.")
+                print("  - Issue: ODBC Driver 18 mandates encryption by default and rejects untrusted certs.")
                 print("    Remediation: Ensure 'TrustServerCertificate=yes;Encrypt=optional;' is present.")
                 print("    In .env: Set MSSQL_TRUST_SERVER_CERTIFICATE=yes and MSSQL_ENCRYPT=optional")
 
         # Diagnosis B: Named instance / SQL Browser failure
         if "\\" in cfg.server or "08001" in err_str or "server was not found" in err_str.lower():
-            print("  • Issue: Named instance resolution failure (e.g. SQLEXPRESS).")
+            print("  - Issue: Named instance resolution failure (e.g. SQLEXPRESS).")
             print("    Remediation: 1. Verify SQL Server service is running: Run 'services.msc'.")
             print("                 2. Verify 'SQL Server Browser' service is Started.")
             print("                 3. Open SQL Server Configuration Manager -> SQL Server Network Configuration.")
@@ -109,14 +109,14 @@ def run_diagnostics():
 
         # Diagnosis C: Authentication Failure
         if "28000" in err_str or "18456" in err_str or "Login failed" in err_str:
-            print("  • Issue: Authentication rejected by SQL Server.")
+            print("  - Issue: Authentication rejected by SQL Server.")
             print("    Remediation: Verify credentials in .env. If using SQL Auth (MSSQL_USER/MSSQL_PASSWORD),")
             print("                 ensure SQL Server is set to 'SQL Server and Windows Authentication mode'")
             print("                 (Server Properties -> Security -> Mixed Mode Authentication).")
 
         # Diagnosis D: Port / Firewall
-        print("  • General: Verify port 1433 (TCP) and port 1434 (UDP for Browser) are allowed in Windows Firewall.")
-        print("  • Local Emulation Note: The platform will automatically fall back to its internal T-SQL emulation")
+        print("  - General: Verify port 1433 (TCP) and port 1434 (UDP for Browser) are allowed in Windows Firewall.")
+        print("  - Local Emulation Note: The platform will automatically fall back to its internal T-SQL emulation")
         print("    engine to allow offline query development and evaluation without interruption.")
 
     print("\n" + "=" * 70)

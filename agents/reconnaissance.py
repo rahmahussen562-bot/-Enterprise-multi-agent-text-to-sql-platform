@@ -107,7 +107,7 @@ class ReconnaissanceAgent:
         # Step 3: Entity Extraction and Active Value Grounding
         grounded_values = self._ground_entity_values(question, candidate_tables)
 
-        # Step 4: Assemble SchemaCard
+        # Step 4: Assemble SchemaCard & Corporate Business Rules
         business_rules = [
             "Target Dialect: Microsoft SQL Server (T-SQL).",
             "Use square brackets for identifiers: [Table].[Column].",
@@ -115,6 +115,17 @@ class ReconnaissanceAgent:
             "Prefer Common Table Expressions (WITH [...] AS (...)) for maintainability.",
             "Explicitly join tables with proper ON conditions. Never omit join predicates."
         ]
+
+        financial_keywords = {"revenue", "profit", "margin", "bank", "fee", "deduction", "share", "partner", "earning", "gross", "net"}
+        query_words = set(re.findall(r"\b\w+\b", question.lower()))
+        if query_words.intersection(financial_keywords):
+            business_rules.extend([
+                "Business Rule - Gross Revenue: SUM([UnitPrice] * [Quantity]).",
+                "Business Rule - Bank Fee: 2.5% transaction deduction (Gross Revenue * 0.025).",
+                "Business Rule - Net Revenue: Gross Revenue * 0.975 (Gross Revenue after 2.5% bank fee).",
+                "Business Rule - Partner Share: Net Revenue * 0.70 (70% of Net Revenue disbursed to partners).",
+                "Business Rule - Company Net Profit: Net Revenue * 0.30 (30% of Net Revenue retained: SUM([UnitPrice] * [Quantity]) * 0.975 * 0.30)."
+            ])
 
         return SchemaCard(
             candidate_tables=candidate_tables,

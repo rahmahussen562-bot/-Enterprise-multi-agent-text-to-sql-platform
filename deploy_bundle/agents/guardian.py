@@ -19,6 +19,11 @@ DISALLOWED_TOKENS = {
 }
 
 
+class SecurityViolationException(PermissionError):
+    """Raised or quarantined when an unauthorized table is referenced."""
+    pass
+
+
 @dataclass
 class GuardianResult:
     is_valid: bool
@@ -39,8 +44,10 @@ class ASTGuardianAgent:
         self,
         raw_sql: str,
         valid_tables: Optional[List[str]] = None,
-        authorized_tables: Optional[List[str]] = None,
-        username: Optional[str] = None
+        authorized_tables: Optional[Any] = None,
+        username: Optional[str] = None,
+        user_session: Optional[Any] = None,
+        raise_on_violation: bool = False
     ) -> GuardianResult:
         """
         Audit raw T-SQL query:
@@ -54,6 +61,17 @@ class ASTGuardianAgent:
         """
         issues: List[str] = []
         clean_sql = raw_sql.strip()
+
+        # Resolve session context if provided
+        if user_session is not None:
+            if hasattr(user_session, "allowed_tables"):
+                authorized_tables = user_session.allowed_tables
+            elif hasattr(user_session, "authorized_tables"):
+                authorized_tables = user_session.authorized_tables
+            if not username:
+                username = getattr(user_session, "username", getattr(user_session, "role_title", "User"))
+        elif authorized_tables is not None and hasattr(authorized_tables, "allowed_tables"):
+            authorized_tables = authorized_tables.allowed_tables
 
         # Phase 1: Fast Regex Security Screening
         tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", clean_sql.upper()))
@@ -152,17 +170,21 @@ class ASTGuardianAgent:
 
             # Phase 6: Strict Table-Level Privilege Enforcement (RBAC/RLC)
             if authorized_tables is not None:
-                whitelist_lower = {t.lower() for t in authorized_tables}
-                unauthorized_tables = [t for t in actual_tables if t not in whitelist_lower]
+                whitelist_lower = {t.strip("[]\"'").lower() for t in authorized_tables}
+                unauthorized_tables = [t for t in actual_tables if t.strip("[]\"'").lower() not in whitelist_lower]
                 if unauthorized_tables:
-                    user_str = f"User '{username}'" if username else "Active persona"
+                    unauth_table = unauthorized_tables[0]
+                    role_str = username or "Active Role"
+                    violation_msg = f"SecurityViolationException: Table [{unauth_table}] is unauthorized for role [{role_str}]."
                     critique = {
                         "type": "RBAC_AUTHORIZATION_VIOLATION",
-                        "message": f"Authorization policy violation: {user_str} is not authorized to query table(s): {unauthorized_tables}. Authorized tables: {authorized_tables}",
+                        "message": violation_msg,
                         "failed_sql": clean_sql,
                         "remediation": f"Only query authorized tables from your corporate scope: {authorized_tables}."
                     }
-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+                    if raise_on_violation:
+                        raise SecurityViolationException(violation_msg)
+                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[violation_msg])
 
             # Phase 7: Schema Conformance Check (Against Database Tables)
             if valid_tables:
@@ -196,6 +218,8 @@ class ASTGuardianAgent:
                 limit_injected=limit_injected
             )
 
+        except SecurityViolationException:
+            raise
         except ImportError:
             logger.info("sqlglot not available; applying fallback linter.")
             return self._fallback_audit(clean_sql, valid_tables, authorized_tables, username)

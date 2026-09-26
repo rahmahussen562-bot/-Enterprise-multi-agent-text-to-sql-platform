@@ -3,7 +3,7 @@ Autonomous 4-Agent Topology for Text-to-SQL.
 """
 from agents.coder import SQLCoderAgent
 from agents.critic import EvaluationResult, RuntimeCriticAgent
-from agents.guardian import ASTGuardianAgent, GuardianResult
+from agents.guardian import ASTGuardianAgent, GuardianResult, SecurityViolationException
 from agents.orchestrator import (
     AgentEvent,
     CentralController,
@@ -18,6 +18,7 @@ __all__ = [
     "SQLCoderAgent",
     "ASTGuardianAgent",
     "GuardianResult",
+    "SecurityViolationException",
     "RuntimeCriticAgent",
     "EvaluationResult",
     "CentralController",
