@@ -4,7 +4,14 @@ Autonomous 4-Agent Topology for Text-to-SQL.
 from agents.coder import SQLCoderAgent
 from agents.critic import EvaluationResult, RuntimeCriticAgent
 from agents.guardian import ASTGuardianAgent, GuardianResult, SecurityViolationException
-from agents.intent_router import IntentClassifier, IntentResult, IntentRouter, IntentType
+from agents.intent_router import (
+    IntentClassifier,
+    IntentResult,
+    IntentRouter,
+    IntentType,
+    classify,
+    classify_intent_semantic,
+)
 from agents.orchestrator import (
     AgentEvent,
     CentralController,
@@ -29,4 +36,7 @@ __all__ = [
     "IntentRouter",
     "IntentResult",
     "IntentType",
+    "IntentClassifier",
+    "classify_intent_semantic",
+    "classify",
 ]

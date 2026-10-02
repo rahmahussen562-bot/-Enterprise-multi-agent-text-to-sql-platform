@@ -68,5 +68,22 @@ class TestIntentRouter(unittest.TestCase):
             self.assertIsNone(res.response_message)
 
 
+    def test_intent_result_properties_and_module_functions(self):
+        # Test module-level function
+        from agents.intent_router import classify_intent_semantic, classify
+        res = classify_intent_semantic("help", user_session=self.sales_user)
+        self.assertEqual(res.intent, IntentType.HELP)
+        # Verify both property pairs exist and return identical values
+        self.assertEqual(res.response, res.response_message)
+        self.assertIsNotNone(res.response)
+        self.assertEqual(res.reason, res.reasoning)
+
+        # Test classify alias
+        res_alias = classify("Who won the World Cup?")
+        self.assertEqual(res_alias.intent, IntentType.OUT_OF_SCOPE)
+        self.assertIn("[DOMAIN BOUNDARY EXCEPTION]", res_alias.response)
+        self.assertIn("[DOMAIN BOUNDARY EXCEPTION]", res_alias.response_message)
+
+
 if __name__ == "__main__":
     unittest.main()

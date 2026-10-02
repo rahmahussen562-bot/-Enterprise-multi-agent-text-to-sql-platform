@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
-from agents.intent_router import IntentResult, IntentRouter, IntentType
+from agents.intent_router import IntentResult, IntentRouter, IntentType, classify_intent_semantic
 from agents.orchestrator import CentralController, OrchestrationResult
 from core.auth import UserSession, authenticate
 from core.config import AgentConfig, DatabaseConfig, LLMConfig, SystemConfig, get_config
@@ -385,30 +385,47 @@ if prompt:
 
     with st.chat_message("assistant"):
         # Step 1: Semantic Intent Classification & Domain Boundary Guard
-        intent_res: IntentResult = intent_router.classify_intent_semantic(prompt, user_session=active_user)
+        try:
+            if hasattr(intent_router, "classify_intent_semantic"):
+                intent_res: IntentResult = intent_router.classify_intent_semantic(prompt, user_session=active_user)
+            elif hasattr(intent_router, "classify"):
+                intent_res: IntentResult = intent_router.classify(prompt, user_session=active_user)
+            elif callable(classify_intent_semantic):
+                intent_res: IntentResult = classify_intent_semantic(prompt, user_session=active_user)
+            else:
+                intent_res = IntentResult(intent=IntentType.DATA_QUERY)
+        except Exception as intent_exc:
+            intent_res = IntentResult(
+                intent=IntentType.DATA_QUERY,
+                reasoning=f"Classifier fallback on exception: {str(intent_exc)}"
+            )
 
-        if intent_res.intent == IntentType.HELP:
+        intent_kind = getattr(intent_res, "intent", IntentType.DATA_QUERY)
+        intent_str = intent_kind.value if hasattr(intent_kind, "value") else str(intent_kind)
+        response_text = getattr(intent_res, "response_message", None) or getattr(intent_res, "response", "")
+
+        if intent_str in ("HELP", "CAPABILITY_HELP"):
             # DO NOT generate SQL or render empty/mock data tables
-            st.markdown(intent_res.response_message)
+            st.markdown(response_text)
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": intent_res.response_message,
+                "content": response_text,
                 "type": "onboarding"
             })
 
-        elif intent_res.intent == IntentType.SECURITY_ATTACK:
-            st.error(intent_res.response_message)
+        elif intent_str in ("SECURITY_ATTACK", "SECURITY_REJECTION"):
+            st.error(response_text)
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": intent_res.response_message,
+                "content": response_text,
                 "error": True
             })
 
-        elif intent_res.intent == IntentType.OUT_OF_SCOPE:
-            st.warning(intent_res.response_message)
+        elif intent_str == "OUT_OF_SCOPE":
+            st.warning(response_text)
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": intent_res.response_message,
+                "content": response_text,
                 "error": True
             })
 

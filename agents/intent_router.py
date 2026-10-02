@@ -28,13 +28,49 @@ class IntentType(str, Enum):
     SECURITY_REJECTION = "SECURITY_ATTACK"
 
 
-@dataclass
 class IntentResult:
-    intent: IntentType
-    confidence: float = 1.0
-    response_message: Optional[str] = None
-    sample_queries: List[str] = field(default_factory=list)
-    reasoning: str = ""
+    """Result payload for semantic intent classification."""
+
+    def __init__(
+        self,
+        intent: Any,
+        confidence: float = 1.0,
+        response_message: Optional[str] = None,
+        sample_queries: Optional[List[str]] = None,
+        reasoning: str = "",
+        response: Optional[str] = None,
+        reason: Optional[str] = None
+    ):
+        if isinstance(intent, IntentType):
+            self.intent = intent
+        else:
+            try:
+                self.intent = IntentType(str(intent))
+            except ValueError:
+                self.intent = IntentType.DATA_QUERY
+        self.confidence = float(confidence)
+        self.response_message = response_message if response_message is not None else response
+        self.sample_queries = sample_queries or []
+        self.reasoning = reasoning if reasoning else (reason or "")
+
+    @property
+    def response(self) -> Optional[str]:
+        return self.response_message
+
+    @response.setter
+    def response(self, val: Optional[str]):
+        self.response_message = val
+
+    @property
+    def reason(self) -> str:
+        return self.reasoning
+
+    @reason.setter
+    def reason(self, val: str):
+        self.reasoning = val
+
+    def __repr__(self) -> str:
+        return f"IntentResult(intent={self.intent}, confidence={self.confidence}, reasoning='{self.reasoning}')"
 
 
 # -----------------------------------------------------------------------------
@@ -365,3 +401,23 @@ Select any of the authorized queries below or enter your inquiry directly:
 
 
 IntentClassifier = IntentRouter
+
+_global_router: Optional[IntentRouter] = None
+
+
+def get_intent_router() -> IntentRouter:
+    """Retrieve or initialize global IntentRouter instance."""
+    global _global_router
+    if _global_router is None:
+        _global_router = IntentRouter()
+    return _global_router
+
+
+def classify_intent_semantic(query: str, user_session: Optional[UserSession] = None) -> IntentResult:
+    """Module-level zero-shot semantic intent classification function."""
+    return get_intent_router().classify_intent_semantic(query, user_session=user_session)
+
+
+def classify(query: str, user_session: Optional[UserSession] = None) -> IntentResult:
+    """Module-level general classification function."""
+    return get_intent_router().classify(query, user_session=user_session)
