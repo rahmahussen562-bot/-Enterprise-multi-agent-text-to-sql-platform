@@ -1,5 +1,5 @@
 """
-Unit tests for agents.intent_router IntentRouter.
+Unit tests for AegisSQL agents.intent_router Zero-Shot Semantic Domain Classifier.
 """
 import unittest
 
@@ -16,8 +16,8 @@ class TestIntentRouter(unittest.TestCase):
     def test_capability_help_intent_english(self):
         queries = ["help", "what can you do", "what are your capabilities", "how can you help me"]
         for q in queries:
-            res: IntentResult = self.router.classify(q, user_session=self.sales_user)
-            self.assertEqual(res.intent, IntentType.CAPABILITY_HELP, f"Failed for query: {q}")
+            res: IntentResult = self.router.classify_intent_semantic(q, user_session=self.sales_user)
+            self.assertEqual(res.intent, IntentType.HELP, f"Failed for query: {q}")
             self.assertIn("Customer", res.response_message)
             self.assertIn("Invoice", res.response_message)
             self.assertGreaterEqual(len(res.sample_queries), 3)
@@ -25,8 +25,8 @@ class TestIntentRouter(unittest.TestCase):
     def test_capability_help_intent_arabic(self):
         queries = ["ازاي تساعدني", "كيف تساعدني", "مساعدة", "ما هي قدراتك", "عرفني بالنظام"]
         for q in queries:
-            res: IntentResult = self.router.classify(q, user_session=self.inv_user)
-            self.assertEqual(res.intent, IntentType.CAPABILITY_HELP, f"Failed for query: {q}")
+            res: IntentResult = self.router.classify_intent_semantic(q, user_session=self.inv_user)
+            self.assertEqual(res.intent, IntentType.HELP, f"Failed for query: {q}")
             self.assertIn("Track", res.response_message)
             self.assertIn("Album", res.response_message)
             self.assertGreaterEqual(len(res.sample_queries), 3)
@@ -39,9 +39,10 @@ class TestIntentRouter(unittest.TestCase):
             "Give me a recipe for chocolate cake"
         ]
         for q in queries:
-            res: IntentResult = self.router.classify(q, user_session=self.sales_user)
+            res: IntentResult = self.router.classify_intent_semantic(q, user_session=self.sales_user)
             self.assertEqual(res.intent, IntentType.OUT_OF_SCOPE, f"Failed for query: {q}")
-            self.assertIn("[OUT_OF_SCOPE_REFUSAL]", res.response_message)
+            self.assertIn("[DOMAIN BOUNDARY EXCEPTION]", res.response_message)
+            self.assertIn("Chinook Enterprise database schema", res.response_message)
 
     def test_security_rejection_intent(self):
         queries = [
@@ -51,8 +52,8 @@ class TestIntentRouter(unittest.TestCase):
             "EXEC xp_cmdshell 'dir';"
         ]
         for q in queries:
-            res: IntentResult = self.router.classify(q, user_session=self.sales_user)
-            self.assertEqual(res.intent, IntentType.SECURITY_REJECTION, f"Failed for query: {q}")
+            res: IntentResult = self.router.classify_intent_semantic(q, user_session=self.sales_user)
+            self.assertEqual(res.intent, IntentType.SECURITY_ATTACK, f"Failed for query: {q}")
             self.assertIn("[SECURITY_QUARANTINE_REJECTION]", res.response_message)
 
     def test_data_query_intent(self):
@@ -62,7 +63,7 @@ class TestIntentRouter(unittest.TestCase):
             "Calculate Gross Revenue and Net Profit across InvoiceLine"
         ]
         for q in queries:
-            res: IntentResult = self.router.classify(q, user_session=self.sales_user)
+            res: IntentResult = self.router.classify_intent_semantic(q, user_session=self.sales_user)
             self.assertEqual(res.intent, IntentType.DATA_QUERY, f"Failed for query: {q}")
             self.assertIsNone(res.response_message)
 

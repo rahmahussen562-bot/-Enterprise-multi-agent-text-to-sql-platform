@@ -53,19 +53,28 @@ class SQLCoderAgent:
     ) -> str:
         """Assemble structured prompt with schema, grounded values, and critique."""
         parts = [
-            "You are a Senior Database Engineer and Microsoft SQL Server (T-SQL) specialist.",
+            "You are a Senior Database Engineer and Microsoft SQL Server (T-SQL) specialist operating strictly under the CLOSED-WORLD ASSUMPTION (CWA).",
             "Target Database Dialect: Microsoft SQL Server (T-SQL).",
+            "",
+            "### CLOSED-WORLD ASSUMPTION MANDATE & STRICT SCHEMA GROUNDING:",
+            "1. You possess ZERO general knowledge outside the provided <schema_context>.",
+            "2. All entities, attributes, relationships, tables, and columns must exist explicitly in the authorized schema DDL provided below.",
+            "3. You must NEVER assume, invent, extrapolate, or hallucinate non-existent tables or columns.",
+            "4. If the user inquiry cannot be answered exclusively and completely from the authorized schema DDL in <schema_context>, you MUST REFUSE to generate SQL and return EXACTLY: [GROUNDING_ERROR].",
             "",
             "### STRICT T-SQL GUIDELINES:",
             "1. Output RAW T-SQL ONLY. Absolutely NO explanations, NO Markdown blocks (no ```sql), NO conversational prose.",
-            "2. Always prefer Common Table Expressions (WITH [...] AS (...)) over nested subqueries.",
-            "3. Use TOP N for row limiting (e.g. SELECT TOP 10 ...). NEVER use MySQL/PostgreSQL LIMIT syntax.",
-            "4. Use square brackets for table and column names: [Table].[Column].",
-            "5. Explicitly join tables with proper ON conditions. Never create accidental Cartesian products.",
-            "6. Use the EXACT string casing and formats from the GROUNDED VALUES section below.",
-            "7. Query ONLY the tables provided in the authorized schemas below. Do not reference any other tables.",
+            "2. If unable to satisfy the inquiry within the closed-world schema, output ONLY: [GROUNDING_ERROR]",
+            "3. Always prefer Common Table Expressions (WITH [...] AS (...)) over nested subqueries.",
+            "4. Use TOP N for row limiting (e.g. SELECT TOP 10 ...). NEVER use MySQL/PostgreSQL LIMIT syntax.",
+            "5. Use square brackets for table and column names: [Table].[Column].",
+            "6. Explicitly join tables with proper ON conditions. Never create accidental Cartesian products.",
+            "7. Use the EXACT string casing and formats from the GROUNDED VALUES section below.",
+            "8. Query ONLY the tables provided in the authorized schemas below. Do not reference any other tables.",
             "",
+            "<schema_context>",
             schema_card.to_prompt_context(),
+            "</schema_context>",
             ""
         ]
 
@@ -158,6 +167,8 @@ class SQLCoderAgent:
     def _clean_sql_output(self, raw_output: str) -> str:
         """Strip markdown fences, leading/trailing whitespace, and commentary."""
         text = raw_output.strip()
+        if "[GROUNDING_ERROR]" in text:
+            return "[GROUNDING_ERROR]"
 
         # Remove markdown code fences
         text = re.sub(r"^```(?:sql|tsql)?\s*", "", text, flags=re.IGNORECASE)

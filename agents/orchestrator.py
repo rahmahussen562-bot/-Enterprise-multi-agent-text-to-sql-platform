@@ -181,6 +181,18 @@ class CentralController:
                     critique=critique,
                     similar_examples=similar_examples
                 )
+                if current_sql.strip() == "[GROUNDING_ERROR]":
+                    _log_event("Coder", "failed", "Closed-World Assumption: Question cannot be derived from authorized schema.")
+                    return OrchestrationResult(
+                        success=False,
+                        final_sql="[GROUNDING_ERROR]",
+                        df=pd.DataFrame(),
+                        executive_narrative="[GROUNDING_ERROR]: The inquiry cannot be derived exclusively from the authorized database schema under the Closed-World Assumption.",
+                        events=events,
+                        retry_history=retry_history,
+                        schema_card=schema_card,
+                        error_message="[GROUNDING_ERROR]: Unanswerable from authorized database schema."
+                    )
                 _log_event("Coder", "success", f"Drafted raw T-SQL query (Iteration {iteration}).", details={"sql": current_sql})
             except Exception as e:
                 _log_event("Coder", "failed", f"Coder generation error: {str(e)}")

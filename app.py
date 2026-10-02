@@ -1,7 +1,8 @@
 """
-Enterprise Multi-Agent Text-to-SQL Platform (Microsoft SQL Server / T-SQL)
-Production Corporate Interface featuring Intent Routing, Hallucination Detection,
-Multi-User RBAC Authentication, and Modern 4-Tab Output Interface.
+AegisSQL Enterprise Gateway: Microsoft SQL Server (T-SQL) Platform
+Production Corporate Interface featuring Semantic Domain Intent Routing,
+Closed-World Grounding, and AST-based Hallucination Elimination.
+Zero-Emoji Industrial UI with 4 Dedicated Analysis Tabs.
 """
 import io
 import os
@@ -24,10 +25,10 @@ except ImportError:
     from utils.visualizer import AutonomousVisualizer
 
 # -----------------------------------------------------------------------------
-# Streamlit Application Configuration
+# Streamlit Application Configuration & Branding
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="ENTERPRISE TEXT-TO-SQL PLATFORM | MS SQL SERVER",
+    page_title="AEGISSQL ENTERPRISE GATEWAY | MS SQL SERVER",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -94,7 +95,7 @@ st.markdown("""
         background-color: #0f172a !important;
     }
 
-    /* Tab Styling */
+    /* Clean Corporate Tab Styling */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         background-color: transparent;
@@ -149,10 +150,10 @@ if st.session_state.user is None:
         st.markdown("""
         <div style="text-align: center; margin-bottom: 24px;">
             <div style="font-size: 1.25rem; font-weight: 700; letter-spacing: 1px; color: #38bdf8;">
-                [CORPORATE ACCESS CONTROL PORTAL]
+                [AEGISSQL CORPORATE ACCESS CONTROL]
             </div>
             <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 4px;">
-                Enterprise Multi-Agent Text-to-SQL Platform | T-SQL Gateway
+                AegisSQL Enterprise Gateway | Microsoft SQL Server (T-SQL)
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -194,7 +195,7 @@ with st.sidebar:
     <div style="padding: 10px 0; border-bottom: 1px solid #334155; margin-bottom: 12px;">
         <span class="corp-badge badge-primary">[GATEWAY CONTROL]</span>
         <div style="font-size: 0.95rem; font-weight: 700; margin-top: 6px; color: #f8fafc;">
-            MANAGEMENT CONSOLE
+            AEGISSQL CONSOLE
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -268,16 +269,16 @@ st.markdown(f"""
     <div style="display: flex; align-items: center; justify-content: space-between;">
         <div>
             <h2 style="margin: 0; font-size: 1.5rem; letter-spacing: -0.5px;">
-                AUTONOMOUS MULTI-AGENT TEXT-TO-SQL PLATFORM
+                AEGISSQL ENTERPRISE GATEWAY
             </h2>
             <div style="font-size: 0.85rem; color: #94a3b8; margin-top: 4px;">
-                Microsoft SQL Server Architecture | AST Injection Quarantine | Intent Routing & Schema Grounding
+                Microsoft SQL Server Architecture | Semantic Intent Gatekeeper | AST Hallucination Defense
             </div>
         </div>
         <div>
             <span class="corp-badge badge-info">DIALECT: T-SQL</span>
-            <span class="corp-badge badge-success">INTENT ROUTER: ACTIVE</span>
-            <span class="corp-badge badge-primary">AST FIREWALL: ACTIVE</span>
+            <span class="corp-badge badge-success">SEMANTIC ROUTER: ACTIVE</span>
+            <span class="corp-badge badge-primary">CLOSED-WORLD CWA: ACTIVE</span>
         </div>
     </div>
 </div>
@@ -285,7 +286,7 @@ st.markdown(f"""
 
 
 # -----------------------------------------------------------------------------
-# Responsive Quick-Action Chips (Tailored by Role)
+# Responsive Quick-Action Chips (Tailored by Role - Zero Emojis)
 # -----------------------------------------------------------------------------
 st.markdown("<div style='font-size: 0.85rem; font-weight: 600; color: #94a3b8; margin-bottom: 8px;'>QUICK-ACTION BUSINESS INQUIRIES:</div>", unsafe_allow_html=True)
 
@@ -293,40 +294,40 @@ chip_c1, chip_c2, chip_c3, chip_c4, chip_c5 = st.columns(5)
 
 if "sales" in active_user.username.lower():
     with chip_c1:
-        if st.button("💰 Sales in Brazil", use_container_width=True):
+        if st.button("[Brazil Sales & Invoices]", use_container_width=True):
             st.session_state.active_prompt = "What are the total sales and invoice count for customers in Brazil?"
     with chip_c2:
-        if st.button("🏆 Top 10 Invoices", use_container_width=True):
+        if st.button("[Top 10 Invoices]", use_container_width=True):
             st.session_state.active_prompt = "Find the top 10 invoices ranked by total billing amount."
     with chip_c3:
-        if st.button("📊 Net Profit Breakdown", use_container_width=True):
+        if st.button("[Net Profit Breakdown]", use_container_width=True):
             st.session_state.active_prompt = "Calculate Gross Revenue, Bank Fees (2.5%), Partner Share (70%), and Company Net Profit (30%) across InvoiceLine."
     with chip_c4:
-        if st.button("👥 High-Value Clients", use_container_width=True):
+        if st.button("[High-Value Clients]", use_container_width=True):
             st.session_state.active_prompt = "Find top 5 customers with their country and billing total."
     with chip_c5:
-        if st.button("ℹ️ Help / إزاي تساعدني", use_container_width=True):
+        if st.button("[Help / System Capabilities]", use_container_width=True):
             st.session_state.active_prompt = "help"
 else:
     with chip_c1:
-        if st.button("🎸 Rock Genre Catalog", use_container_width=True):
+        if st.button("[Rock Genre Catalog]", use_container_width=True):
             st.session_state.active_prompt = "List tracks in the Rock genre with their album and artist details."
     with chip_c2:
-        if st.button("🎤 Top 10 Artists", use_container_width=True):
+        if st.button("[Top 10 Artists]", use_container_width=True):
             st.session_state.active_prompt = "Find the top 10 artists with the highest number of albums in the catalog."
     with chip_c3:
-        if st.button("📀 Media Distribution", use_container_width=True):
+        if st.button("[Media Distribution]", use_container_width=True):
             st.session_state.active_prompt = "Show the total track count across each media type in the catalog."
     with chip_c4:
-        if st.button("⏱️ Longest Audio Tracks", use_container_width=True):
+        if st.button("[Longest Audio Tracks]", use_container_width=True):
             st.session_state.active_prompt = "Find the 10 longest audio tracks with their duration in milliseconds."
     with chip_c5:
-        if st.button("ℹ️ Help / إزاي تساعدني", use_container_width=True):
+        if st.button("[Help / System Capabilities]", use_container_width=True):
             st.session_state.active_prompt = "help"
 
 
 # -----------------------------------------------------------------------------
-# Chat Conversation History (Clean 4-Tab Rendering)
+# Chat Conversation History (Clean 4-Tab Rendering - Zero Emojis)
 # -----------------------------------------------------------------------------
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
@@ -337,16 +338,16 @@ for idx, msg in enumerate(st.session_state.messages):
         elif msg.get("df") is not None and isinstance(msg["df"], pd.DataFrame) and not msg["df"].empty:
             st.markdown(f"**Analysis Summary:** {msg.get('content', '')}")
             h_tab1, h_tab2, h_tab3, h_tab4 = st.tabs([
-                "📊 Result Dataset",
-                "📈 Visual Analytics",
-                "📝 Validated T-SQL",
-                "🛡️ Guardrail Telemetry"
+                "Query Dataset",
+                "Visual Analytics",
+                "Validated T-SQL",
+                "Security Telemetry"
             ])
             with h_tab1:
                 st.dataframe(msg["df"], use_container_width=True)
                 csv_bytes = msg["df"].to_csv(index=False).encode("utf-8")
                 st.download_button(
-                    label="📥 Export Dataset (CSV)",
+                    label="Export Dataset (CSV)",
                     data=csv_bytes,
                     file_name=f"dataset_{idx}.csv",
                     mime="text/csv",
@@ -383,10 +384,10 @@ if prompt:
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        # Step 1: Intent Classification & Operational Grounding
-        intent_res: IntentResult = intent_router.classify(prompt, user_session=active_user)
+        # Step 1: Semantic Intent Classification & Domain Boundary Guard
+        intent_res: IntentResult = intent_router.classify_intent_semantic(prompt, user_session=active_user)
 
-        if intent_res.intent == IntentType.CAPABILITY_HELP:
+        if intent_res.intent == IntentType.HELP:
             # DO NOT generate SQL or render empty/mock data tables
             st.markdown(intent_res.response_message)
             st.session_state.messages.append({
@@ -395,7 +396,7 @@ if prompt:
                 "type": "onboarding"
             })
 
-        elif intent_res.intent == IntentType.SECURITY_REJECTION:
+        elif intent_res.intent == IntentType.SECURITY_ATTACK:
             st.error(intent_res.response_message)
             st.session_state.messages.append({
                 "role": "assistant",
@@ -464,12 +465,14 @@ if prompt:
 
             # Telemetry Metadata
             telemetry_data = {
+                "platform": "AegisSQL Enterprise Gateway",
                 "ast_firewall_status": "APPROVED" if result.success else "REJECTED_OR_FAILED",
                 "rbac_role": active_user.role_title,
                 "operator_id": active_user.username,
                 "authorized_tables": allowed_tables,
                 "referenced_tables": getattr(result.schema_card, "candidate_tables", []),
                 "hallucination_check": "PASSED_STRICT_SCHEMA_GROUNDING" if result.success else "FLAGGED",
+                "closed_world_assumption": "ENFORCED",
                 "execution_latency_ms": round(result.execution_time_ms, 2),
                 "self_healing_retries": len(result.retry_history),
                 "dialect": "Microsoft SQL Server (T-SQL)",
@@ -477,16 +480,16 @@ if prompt:
             }
 
             # -----------------------------------------------------------------
-            # 4 Streamlit Tabs Presentation
+            # 4 Clean Output Tabs (Zero Emojis)
             # -----------------------------------------------------------------
             tabs = st.tabs([
-                "📊 Result Dataset",
-                "📈 Visual Analytics",
-                "📝 Validated T-SQL",
-                "🛡️ Guardrail Telemetry"
+                "Query Dataset",
+                "Visual Analytics",
+                "Validated T-SQL",
+                "Security Telemetry"
             ])
 
-            # Tab 1: Result Dataset
+            # Tab 1: Query Dataset
             with tabs[0]:
                 if not result.df.empty:
                     col_m1, col_m2, col_m3 = st.columns(3)
@@ -515,7 +518,7 @@ if prompt:
                     with exp_c1:
                         csv_bytes = result.df.to_csv(index=False).encode("utf-8")
                         st.download_button(
-                            label="📥 Export Dataset (CSV)",
+                            label="Export Dataset (CSV)",
                             data=csv_bytes,
                             file_name="query_results.csv",
                             mime="text/csv",
@@ -532,7 +535,7 @@ if prompt:
                                 result.df.to_excel(writer, index=False, sheet_name="Results")
 
                         st.download_button(
-                            label="📊 Export Dataset (Excel)",
+                            label="Export Dataset (Excel)",
                             data=excel_buffer.getvalue(),
                             file_name="query_results.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -574,7 +577,7 @@ if prompt:
                     if st.button("[Flag Query Inaccuracy]", key=f"flag_err_{time.time()}"):
                         st.toast("Audit feedback logged for model tuning.", icon="[LOG]")
 
-            # Tab 4: Guardrail Telemetry
+            # Tab 4: Security Telemetry
             with tabs[3]:
                 st.json(telemetry_data)
                 with st.expander("Agent State Machine Trace Log", expanded=False):
