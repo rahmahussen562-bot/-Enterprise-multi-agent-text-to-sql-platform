@@ -14,6 +14,7 @@ import pandas as pd
 from agents.coder import SQLCoderAgent
 from agents.critic import EvaluationResult, RuntimeCriticAgent
 from agents.guardian import ASTGuardianAgent, GuardianResult
+from agents.intent_router import IntentResult, IntentRouter, IntentType
 from agents.reconnaissance import ReconnaissanceAgent, SchemaCard
 from core.auth import UserSession
 from core.config import AgentConfig, SystemConfig, get_config
@@ -54,6 +55,7 @@ class OrchestrationResult:
     schema_card: Optional[SchemaCard] = None
     execution_time_ms: float = 0.0
     error_message: Optional[str] = None
+    intent: str = "DATA_QUERY"
 
 
 class CentralController:
@@ -73,6 +75,11 @@ class CentralController:
         self.coder = SQLCoderAgent(self.config.llm, dialect="tsql")
         self.guardian = ASTGuardianAgent(default_limit=self.config.agent.defensive_limit, dialect="tsql")
         self.critic = RuntimeCriticAgent(self.db, timeout_sec=self.config.db.query_timeout_sec)
+        self.intent_router = IntentRouter()
+
+    def classify_intent(self, question: str, user_session: Optional[UserSession] = None) -> IntentResult:
+        """Classify question intent against security, capability, and database boundaries."""
+        return self.intent_router.classify(question, user_session=user_session)
 
     def execute_pipeline(
         self,
@@ -82,7 +89,7 @@ class CentralController:
     ) -> OrchestrationResult:
         """
         Execute the 4-agent state machine pipeline:
-        Explorer -> Coder -> Guardian -> Evaluator under active user's authorized scope.
+        Intent Check -> Explorer -> Coder -> Guardian -> Evaluator under active user's authorized scope.
         """
         start_time = time.perf_counter()
         events: List[AgentEvent] = []
@@ -90,6 +97,30 @@ class CentralController:
 
         authorized_tables = user_session.authorized_tables if user_session else None
         username = user_session.username if user_session else "system"
+
+        # STAGE 0: Intent Routing & Operational Boundaries Check
+        intent_res = self.classify_intent(question, user_session=user_session)
+        if intent_res.intent == IntentType.CAPABILITY_HELP:
+            return OrchestrationResult(
+                success=True,
+                final_sql="",
+                df=pd.DataFrame(),
+                executive_narrative=intent_res.response_message or "",
+                events=[],
+                retry_history=[],
+                intent=intent_res.intent.value
+            )
+        elif intent_res.intent in (IntentType.SECURITY_REJECTION, IntentType.OUT_OF_SCOPE):
+            return OrchestrationResult(
+                success=False,
+                final_sql="",
+                df=pd.DataFrame(),
+                executive_narrative=intent_res.response_message or "",
+                events=[],
+                retry_history=[],
+                error_message=intent_res.response_message,
+                intent=intent_res.intent.value
+            )
 
         def _log_event(agent: str, status: str, msg: str, details: Optional[Dict[str, Any]] = None):
             ev = AgentEvent(agent_name=agent, status=status, message=msg, details=details)
@@ -205,7 +236,9 @@ class CentralController:
                 question=question,
                 sql=sanitized_sql,
                 iteration=iteration,
-                max_iterations=max_retries
+                max_iterations=max_retries,
+                user_session=user_session,
+                authorized_tables=authorized_tables
             )
 
             if not eval_result.success:

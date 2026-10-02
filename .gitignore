@@ -1,4 +1,13 @@
 .DS_store
 postgre_table_dumps
 postgre_table_dumps_full
+__pycache__/
 *.pyc
+*.sqlite
+*.sqlite3
+*.db
+data/*.sqlite
+data/*.db
+data/*.sqlite3
+data/semantic_store/
+*.log

@@ -32,19 +32,124 @@ class RuntimeCriticAgent:
     def __init__(self, db_engine: DatabaseEngine, timeout_sec: int = 15):
         self.db = db_engine
         self.timeout_sec = timeout_sec
+        self._col_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _get_cached_columns(self, table_name: str) -> List[Dict[str, Any]]:
+        clean_tbl = table_name.strip("[]\"'").lower()
+        if clean_tbl not in self._col_cache:
+            try:
+                self._col_cache[clean_tbl] = self.db.get_table_columns_info(table_name)
+            except Exception:
+                self._col_cache[clean_tbl] = []
+        return self._col_cache[clean_tbl]
+
+    def validate_schema_grounding(
+        self,
+        sql: str,
+        authorized_tables: Optional[List[str]] = None,
+        user_session: Optional[Any] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Pre-execution AST verification:
+        1. Ensures all referenced tables strictly belong to user_session.allowed_tables (RBAC).
+        2. Detects hallucinated/fabricated columns not present in verified schema metadata.
+        """
+        try:
+            import sqlglot
+            from sqlglot import exp
+        except ImportError:
+            return None
+
+        try:
+            expression = sqlglot.parse_one(sql, read="tsql")
+        except Exception:
+            return None
+
+        # 1. Extract CTE names to avoid mistaking CTE aliases for base tables
+        cte_names = set()
+        with_node = expression.find(exp.With)
+        if with_node:
+            for cte in with_node.expressions:
+                if hasattr(cte, "alias") and cte.alias:
+                    cte_names.add(cte.alias.lower())
+
+        # 2. Extract referenced base tables
+        referenced_tables = [
+            t.name for t in expression.find_all(exp.Table)
+            if t.name and t.name.lower() not in cte_names
+        ]
+
+        # 3. Check Table Authorization Whitelist (RBAC Isolation)
+        auth_tables = getattr(user_session, "allowed_tables", getattr(user_session, "authorized_tables", authorized_tables))
+        if auth_tables is not None:
+            auth_set = {t.strip("[]\"'").lower() for t in auth_tables}
+            for tbl in referenced_tables:
+                if tbl.strip("[]\"'").lower() not in auth_set:
+                    role_str = getattr(user_session, "username", getattr(user_session, "role_title", "Active Role"))
+                    return {
+                        "type": "HALLUCINATION_UNAUTHORIZED_TABLE",
+                        "message": f"Hallucination / RBAC Isolation: Table [{tbl}] is unauthorized for role [{role_str}]. Allowed tables: {list(auth_tables)}",
+                        "failed_sql": sql,
+                        "remediation": f"Remove [{tbl}]. Only reference authorized tables from scope: {list(auth_tables)}."
+                    }
+
+        # 4. Check for Fabricated / Non-Existent Columns
+        valid_columns = set()
+        for tbl in referenced_tables:
+            clean_t = tbl.strip("[]\"'")
+            cols = self._get_cached_columns(clean_t)
+            for c in cols:
+                valid_columns.add(c["name"].lower())
+
+        # Collect query-defined aliases and standard keywords/wildcards
+        query_aliases = {alias.alias.lower() for alias in expression.find_all(exp.Alias) if alias.alias}
+        query_aliases.add("*")
+        builtins = {"1", "0", "null", "getdate", "sysdatetime", "newid", "row_number"}
+
+        for col_node in expression.find_all(exp.Column):
+            if col_node.name and col_node.name != "*":
+                col_name = col_node.name.strip("[]\"'").lower()
+                if valid_columns:
+                    if col_name not in valid_columns and col_name not in query_aliases and col_name not in cte_names and col_name not in builtins:
+                        return {
+                            "type": "HALLUCINATION_INVALID_COLUMN",
+                            "message": f"Hallucination Detected: Fabricated column [{col_node.name}] does not exist in schema of {referenced_tables}.",
+                            "failed_sql": sql,
+                            "remediation": f"Column [{col_node.name}] is invalid. Select from valid verified schema columns: {sorted(list(valid_columns))}."
+                        }
+
+        return None
 
     def evaluate(
         self,
         question: str,
         sql: str,
         iteration: int = 1,
-        max_iterations: int = 3
+        max_iterations: int = 3,
+        user_session: Optional[Any] = None,
+        authorized_tables: Optional[List[str]] = None
     ) -> EvaluationResult:
         """
         Execute query in sandbox, run post-execution sanity checks,
         and generate executive analytical synthesis.
         """
         start_t = time.perf_counter()
+
+        # Step 0: Pre-execution Hallucination Detection & Strict Schema Grounding
+        schema_critique = self.validate_schema_grounding(
+            sql=sql,
+            authorized_tables=authorized_tables,
+            user_session=user_session
+        )
+        if schema_critique:
+            elapsed_ms = (time.perf_counter() - start_t) * 1000
+            return EvaluationResult(
+                success=False,
+                df=pd.DataFrame(),
+                execution_time_ms=elapsed_ms,
+                critique=schema_critique,
+                sanity_warnings=[schema_critique["message"]]
+            )
 
         # Step 1: Sandbox Execution with Timeout
         try:
