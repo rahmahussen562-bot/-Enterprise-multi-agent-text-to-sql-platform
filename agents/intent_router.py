@@ -28,18 +28,25 @@ class IntentType(str, Enum):
     SECURITY_REJECTION = "SECURITY_ATTACK"
 
 
+@dataclass
 class IntentResult:
     """Result payload for semantic intent classification."""
+    intent: Any = IntentType.DATA_QUERY
+    confidence: float = 1.0
+    response_message: Optional[str] = None
+    sample_queries: List[str] = field(default_factory=list)
+    reasoning: str = ""
 
     def __init__(
         self,
-        intent: Any,
+        intent: Any = IntentType.DATA_QUERY,
         confidence: float = 1.0,
         response_message: Optional[str] = None,
         sample_queries: Optional[List[str]] = None,
         reasoning: str = "",
         response: Optional[str] = None,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        **kwargs: Any
     ):
         if isinstance(intent, IntentType):
             self.intent = intent
@@ -50,7 +57,7 @@ class IntentResult:
                 self.intent = IntentType.DATA_QUERY
         self.confidence = float(confidence)
         self.response_message = response_message if response_message is not None else response
-        self.sample_queries = sample_queries or []
+        self.sample_queries = sample_queries if sample_queries is not None else []
         self.reasoning = reasoning if reasoning else (reason or "")
 
     @property
@@ -58,7 +65,7 @@ class IntentResult:
         return self.response_message
 
     @response.setter
-    def response(self, val: Optional[str]):
+    def response(self, val: Optional[str]) -> None:
         self.response_message = val
 
     @property
@@ -66,7 +73,7 @@ class IntentResult:
         return self.reasoning
 
     @reason.setter
-    def reason(self, val: str):
+    def reason(self, val: str) -> None:
         self.reasoning = val
 
     def __repr__(self) -> str:
@@ -123,7 +130,7 @@ class IntentRouter:
 
     def classify_intent_semantic(
         self,
-        query: str,
+        query: Optional[str] = None,
         user_session: Optional[UserSession] = None
     ) -> IntentResult:
         """
@@ -132,7 +139,41 @@ class IntentRouter:
         - Commercial/Sales (Customer, Invoice, InvoiceLine, Revenue)
         - Catalog/Operations (Track, Album, Artist, Genre, MediaType)
         Returns: HELP, DATA_QUERY, OUT_OF_SCOPE, or SECURITY_ATTACK.
+        Supports both instance call and class/static invocation.
         """
+        if isinstance(self, str):
+            actual_query = self
+            actual_session = query if isinstance(query, UserSession) else user_session
+            return get_intent_router()._execute_classify(actual_query, user_session=actual_session)
+        return self._execute_classify(query or "", user_session=user_session)
+
+    def classify(
+        self,
+        query: Optional[str] = None,
+        user_session: Optional[UserSession] = None
+    ) -> IntentResult:
+        """Alias for classify_intent_semantic for backward compatibility."""
+        if isinstance(self, str):
+            actual_query = self
+            actual_session = query if isinstance(query, UserSession) else user_session
+            return get_intent_router()._execute_classify(actual_query, user_session=actual_session)
+        return self._execute_classify(query or "", user_session=user_session)
+
+    @staticmethod
+    def classify_semantic(query: str, user_session: Optional[UserSession] = None) -> IntentResult:
+        """Static method helper for semantic intent classification."""
+        return get_intent_router().classify_intent_semantic(query, user_session=user_session)
+
+    @staticmethod
+    def classify_static(query: str, user_session: Optional[UserSession] = None) -> IntentResult:
+        """Static method alias for general classification."""
+        return get_intent_router().classify(query, user_session=user_session)
+
+    def _execute_classify(
+        self,
+        query: str,
+        user_session: Optional[UserSession] = None
+    ) -> IntentResult:
         clean_query = query.strip()
         if not clean_query:
             return IntentResult(
@@ -184,10 +225,6 @@ class IntentRouter:
                 response_message=None,
                 reasoning=reasoning
             )
-
-    def classify(self, query: str, user_session: Optional[UserSession] = None) -> IntentResult:
-        """Alias for classify_intent_semantic for backward compatibility."""
-        return self.classify_intent_semantic(query, user_session=user_session)
 
     def _call_llm_classifier(self, query: str) -> Optional[Dict[str, Any]]:
         """Call LLM for zero-shot semantic domain classification."""
@@ -419,5 +456,17 @@ def classify_intent_semantic(query: str, user_session: Optional[UserSession] = N
 
 
 def classify(query: str, user_session: Optional[UserSession] = None) -> IntentResult:
-    """Module-level general classification function."""
+    """Module-level general classification function alias."""
     return get_intent_router().classify(query, user_session=user_session)
+
+
+__all__ = [
+    "IntentResult",
+    "IntentType",
+    "IntentRouter",
+    "IntentClassifier",
+    "classify_intent_semantic",
+    "classify",
+    "get_intent_router",
+]
+

@@ -84,6 +84,19 @@ class TestIntentRouter(unittest.TestCase):
         self.assertIn("[DOMAIN BOUNDARY EXCEPTION]", res_alias.response)
         self.assertIn("[DOMAIN BOUNDARY EXCEPTION]", res_alias.response_message)
 
+        # Test dataclass and __all__ exports
+        import dataclasses
+        import agents.intent_router as ir_mod
+        self.assertTrue(dataclasses.is_dataclass(IntentResult))
+        for expected in ["IntentResult", "IntentType", "IntentRouter", "classify_intent_semantic", "classify"]:
+            self.assertIn(expected, ir_mod.__all__)
+
+        # Test static and class method invocations
+        res_static = IntentRouter.classify_semantic("help")
+        self.assertEqual(res_static.intent, IntentType.HELP)
+        res_direct = IntentRouter.classify_intent_semantic("What are total sales?")
+        self.assertEqual(res_direct.intent, IntentType.DATA_QUERY)
+
 
 if __name__ == "__main__":
     unittest.main()
