@@ -1,0 +1,6 @@
+{
+  "source_url": "https://raw.githubusercontent.com/lerocha/chinook-database/master/ChinookDatabase/DataSources/Chinook_Sqlite.sqlite",
+  "sqlite_sha256": "7651ba378ac2fcd0dfc3c66fb101f7a7eed3ba39a612ec642b96e20702061f15",
+  "sql_gzip_sha256": "51e2381bd6b2b43f0bc60cc408959b89ae956c54855127cbe224c1fe0b606ccb",
+  "brazil_customer_count": 5
+}

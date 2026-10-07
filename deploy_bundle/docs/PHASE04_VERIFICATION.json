@@ -1,0 +1,81 @@
+{
+  "verified_at_utc": "2026-10-07T05:03:48.622101+00:00",
+  "backend": {
+    "passed": 320,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "phase03_baseline_retained": 250,
+    "fincore": 70,
+    "native_postgres_cases": 36,
+    "api": 43,
+    "historical_test_hashes_unchanged": {
+      "tests/test_auth.py": true,
+      "tests/test_critic.py": true,
+      "tests/test_database.py": true,
+      "tests/test_guardian.py": true,
+      "tests/test_intent_router.py": true,
+      "tests/test_orchestrator.py": true,
+      "tests/test_reconnaissance.py": true,
+      "tests/test_visualizer.py": true
+    }
+  },
+  "frontend": {
+    "passed": 10,
+    "typescript_build": "passed",
+    "openapi_drift": "passed",
+    "zero_emoji": {
+      "emojiFiles": [],
+      "passed": true
+    }
+  },
+  "postgres": {
+    "server_version": "17.11",
+    "migration": "0001",
+    "forced_rls_tables": 17,
+    "masked_invoker_views": [
+      "branch.account_summaries",
+      "branch.daily_flows",
+      "branch.loan_performance",
+      "compliance.aml_transactions",
+      "compliance.cash_daily_monitoring",
+      "compliance.compliance_cases",
+      "compliance.kyc_reviews",
+      "compliance.risk_assessments",
+      "compliance.screening_hits",
+      "fraud.card_events",
+      "fraud.flagged_transactions",
+      "fraud.investigation_cases"
+    ],
+    "restricted_groups": 4,
+    "synthetic_principals": 6,
+    "fixture_kind": "native PostgreSQL with encrypted synthetic banking records",
+    "storage_root": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\postgres",
+    "fixture_server_stopped": true
+  },
+  "versions": {
+    "psycopg": "3.3.6",
+    "psycopg-binary": "3.3.6",
+    "psycopg-pool": "3.3.3",
+    "sqlglot": "30.21.0",
+    "fastapi": "0.142.2",
+    "pydantic": "2.13.5",
+    "pytest": "9.1.1"
+  },
+  "legacy_python_pins_retained": true,
+  "pip_check": "No broken requirements found.",
+  "directory_bytes": {
+    "D:\\BIRD-Interact\\deploy_bundle\\.venv": 364815030,
+    "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\postgres": 540603710,
+    "D:\\BIRD-Interact\\frontend\\node_modules": 191608163,
+    "D:\\BIRD-Interact\\frontend\\dist": 984240
+  },
+  "d_free_bytes": 116677136384,
+  "storage": {
+    "python": "D:\\BIRD-Interact\\deploy_bundle\\.venv",
+    "postgres": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\postgres",
+    "frontend": "D:\\BIRD-Interact\\frontend"
+  },
+  "contract": "Existing Phase 3 REST paths/requests/outputs unchanged; banking role enum and postgres schema dialect added.",
+  "boundary": "Actual local PostgreSQL 17.11; synthetic encrypted fixtures, native RLS/constraints/cancellation. Banking synthesis uses approved finite v1 English catalog. No production data migration, KMS integration or Cloudflare deployment."
+}

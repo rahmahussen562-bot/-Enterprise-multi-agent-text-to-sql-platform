@@ -1,0 +1,3 @@
+# Preserve PDF cross-reference offsets and compressed fixture bytes on Windows.
+*.pdf binary
+*.gz binary

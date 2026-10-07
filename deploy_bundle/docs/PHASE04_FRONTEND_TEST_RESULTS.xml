@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="10" failures="0" errors="0" time="0.0461977">
+    <testsuite name="src/api/stream.test.ts" timestamp="2026-10-06T23:47:46.832Z" hostname="DESKTOP-8NFUD93" tests="7" failures="0" errors="0" skipped="0" time="0.0354601">
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; authenticates in a frame and starts only after ready" time="0.0123569">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; deduplicates durable events and resubscribes without repeating execution" time="0.004142">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; does not resubmit after an ambiguous acknowledgement loss" time="0.0047203">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; cancels before acknowledgement without later starting a query" time="0.0023712">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; recovers a sequence gap from the owned audit endpoint" time="0.0030419">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; delivers the final result only after an in-flight replay closes its gap" time="0.0019458">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; rejects a final result if the audit cannot close a sequence gap" time="0.0029734">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/lib/data.test.ts" timestamp="2026-10-06T23:47:46.837Z" hostname="DESKTOP-8NFUD93" tests="3" failures="0" errors="0" skipped="0" time="0.0107376">
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; sorts large decimals without Number precision loss" time="0.0039356">
+        </testcase>
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; escapes CSV formula injection while preserving numbers and Unicode" time="0.001641">
+        </testcase>
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; writes Excel cells as literal strings and preserves decimal precision" time="0.0022058">
+        </testcase>
+    </testsuite>
+</testsuites>

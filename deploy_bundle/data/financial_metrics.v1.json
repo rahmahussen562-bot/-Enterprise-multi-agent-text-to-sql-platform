@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "domain": "FinCore Enterprise",
+  "metrics": {
+    "daily_balance": {
+      "roles": ["branch_analyst"],
+      "relation": "branch.account_summaries",
+      "definition": "Sum immutable posted journal lines through the current business date using the account normal side; available balance subtracts unreleased, unexpired holds. No model-generated balance formulas.",
+      "as_of": "Institution business date from its configured timezone (Africa/Cairo initially), independent of client/session timezone, and statement timestamp; historical holds need their release/expiry timestamps.",
+      "currency_rule": "Amounts remain in each account's ISO currency; never sum unlike currencies."
+    },
+    "high_risk_cash": {
+      "roles": ["compliance_officer"],
+      "relation": "compliance.cash_daily_monitoring",
+      "definition": "Aggregate confirmed posted USD cash movements for each known conductor/beneficiary and business date. Deduplicate the same transaction/person. Cash-in and cash-out are separate totals; either strictly exceeding USD 10000 triggers review. Do not offset directions or accounts.",
+      "jurisdiction": "US reference policy",
+      "threshold": "10000.00",
+      "comparison": ">",
+      "boundary": "Monitoring evidence, not automatic CTR/SAR filing. Exemption adjudication, cross-currency valuation and ownership knowledge require approved additional evidence.",
+      "source": "https://www.fincen.gov/resources/frequently-asked-questions-regarding-fincen-currency-transaction-report-ctr"
+    },
+    "loan_performance": {
+      "roles": ["branch_analyst"],
+      "relation": "branch.loan_performance",
+      "definition": "Outstanding loan principal comes from posted loan-account ledger balance. Delinquency is days since the earliest unpaid contractual installment due before the business date. Daily interest is principal * contractual annual rate * contractual day-count fraction for [business_date, business_date + 1).",
+      "day_counts": ["ACT/360", "ACT/365F", "30E/360"],
+      "rounding": "Retain calculation precision; round only at currency posting. Fixed-rate, simple-interest contracts in v1; no invented compounding, grace periods or variable-rate resets."
+    }
+  }
+}

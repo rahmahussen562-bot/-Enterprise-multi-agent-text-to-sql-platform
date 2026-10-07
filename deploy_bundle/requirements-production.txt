@@ -1,0 +1,14 @@
+# Lean API runtime. Streamlit, Arrow, PDF tooling and test tools stay outside the image.
+fastapi==0.142.2
+uvicorn==0.54.0
+websockets==17.2
+pydantic==2.13.5
+sqlglot==30.21.0
+psycopg[binary,pool]==3.3.6
+psycopg-pool==3.3.3
+pyodbc==5.3.0
+pandas==3.0.6
+numpy==2.5.3
+plotly==7.1.0
+python-dotenv==1.2.4
+requests==2.34.2

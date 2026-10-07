@@ -1,0 +1,12 @@
+
+# SentinelSQL portable container and source files
+*.sh text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.sql text eol=lf
+*.pdf binary
+*.gz binary

@@ -1,0 +1,17 @@
+{
+  "private_directory": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\api-private",
+  "session_key_bytes": 32,
+  "created_key": false,
+  "created_operator_roles": [],
+  "verified_roles": [
+    "branch_analyst",
+    "compliance_officer",
+    "fraud_investigator"
+  ],
+  "password_storage": "PBKDF2-SHA256, random salts, 310000 iterations",
+  "demo_authentication_verified": true,
+  "tampered_tokens_rejected": true,
+  "role_scopes_disjoint": true,
+  "credential_values_printed": false,
+  "verification_scope": "local authentication and protected classification; no production database deployment"
+}

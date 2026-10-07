@@ -6,6 +6,13 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
+secrets/
+SECRETS_DIR/
+*.pem
+*.key
+*.crt
+edge/node_modules/
 
 # Python Cache & Bytecode
 __pycache__/
@@ -26,7 +33,17 @@ venv.bak/
 *.db
 *.sqlite
 *.sqlite3
-data/
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+pgdata/
+postgres-data/
+data/*
+!data/fincore_schema.sql
+!data/financial_metrics.v1.json
 data/*.db
 data/semantic_store/
 
@@ -47,3 +64,10 @@ Thumbs.db
 *.log
 tmp/
 temp/
+
+# D-drive provisioning and build artifacts
+.runtime/
+build/
+frontend/node_modules/
+frontend/dist/
+frontend/.next/

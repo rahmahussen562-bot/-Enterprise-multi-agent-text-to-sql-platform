@@ -1,0 +1,2418 @@
+diff --git a/deploy_bundle/agents/guardian.py b/deploy_bundle/agents/guardian.py
+--- a/deploy_bundle/agents/guardian.py
++++ b/deploy_bundle/agents/guardian.py
+@@ -1,27 +1,26 @@
+-"""
+-Agent 3: Deterministic AST SQL Injection Firewall & RLC Enforcement (The Guardian)
+-Parses T-SQL queries into an Abstract Syntax Tree (AST) using sqlglot (dialect="tsql").
+-Enforces anti-injection quarantine, table-level RBAC/RLC authorization,
+-Cartesian join defense, and automatic T-SQL TOP 100 injection.
+-"""
++"""Deterministic, fail-closed AST firewall and table authorization for SQL."""
+ import logging
+-import re
+ from dataclasses import dataclass, field
+-from typing import Any, Dict, List, Optional, Set
++from typing import Any, Dict, List, Optional
++
++from core.sql_validation import (
++    ValidationError, identifier_parts, parse_single_query, physical_tables,
++    query_scopes, table_matches_allowed,
++)
+ 
+ logger = logging.getLogger("TextToSQL.Guardian")
+ 
+-# Destructive and dangerous T-SQL tokens blocked by firewall
++# Retained for callers importing the legacy token registry. Authorization uses
++# parsed nodes, so harmless words inside comments/literals do not become SQL.
+ DISALLOWED_TOKENS = {
+     "DROP", "DELETE", "UPDATE", "ALTER", "TRUNCATE", "INSERT",
+     "REPLACE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
+-    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET"
++    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET",
+ }
+ 
+ 
+ class SecurityViolationException(PermissionError):
+     """Raised or quarantined when an unauthorized table is referenced."""
+-    pass
+ 
+ 
+ @dataclass
+@@ -34,11 +33,96 @@
+ 
+ 
+ class ASTGuardianAgent:
+-    """Agent 3: AST Static Linter & Firewall Agent (The Guardian) for T-SQL."""
++    """Read-only query firewall preserving the original Guardian contract."""
+ 
+     def __init__(self, default_limit: int = 100, dialect: str = "tsql"):
++        if not isinstance(default_limit, int) or default_limit <= 0:
++            raise ValueError("default_limit must be a positive integer")
+         self.default_limit = default_limit
+         self.dialect = dialect.lower()
++
++    @staticmethod
++    def _deny(sql: str, code: str, message: str, remediation: str) -> GuardianResult:
++        critique = {
++            "type": code, "message": message, "failed_sql": sql,
++            "remediation": remediation,
++        }
++        return GuardianResult(False, sql, critique=critique, issues=[message])
++
++    def _reject_identifier_collisions(self, names: Optional[List[str]]) -> None:
++        """Case-folded lookup must not collapse two distinct catalog objects."""
++        from sqlglot import exp
++
++        seen = {}
++        for name in names or []:
++            relation = exp.to_table(str(name), dialect=self.dialect)
++            if self.dialect == "tsql" and len(identifier_parts(relation)) == 1:
++                relation.set("db", exp.to_identifier("dbo"))
++            folded = identifier_parts(relation)
++            spelling = tuple(part.name for part in relation.parts)
++            if folded in seen and seen[folded] != spelling:
++                raise ValidationError(
++                    "AST_IDENTIFIER_COLLISION",
++                    f"Distinct relation spellings {seen[folded]} and {spelling} collide under identifier matching.",
++                )
++            seen[folded] = spelling
++
++    def _canonicalize_table(self, table: Any, names: Optional[List[str]]) -> None:
++        """Render the permitted physical identity, never an implicit schema."""
++        from sqlglot import exp
++
++        canonical = table.copy()
++        for name in names or []:
++            if table_matches_allowed(table, [name], dialect=self.dialect):
++                canonical = exp.to_table(str(name), dialect=self.dialect)
++                break
++        if self.dialect == "tsql" and len(identifier_parts(canonical)) == 1:
++            canonical.set("db", exp.to_identifier("dbo"))
++
++        # Table aliases remain query-owned names, separate from the authorized
++        # physical identifier. Keep implicit table qualifiers working when a
++        # case-insensitive match is rendered using its approved spelling.
++        original_name = table.this.copy()
++        changed_name = table.name != canonical.name
++        for key in ("this", "db", "catalog"):
++            value = canonical.args.get(key)
++            table.set(key, value.copy() if value is not None else None)
++        if changed_name and not table.alias:
++            table.set("alias", exp.TableAlias(this=original_name))
++
++    @staticmethod
++    def _joins_scopes(predicate: Any, previous: set, joined: str) -> bool:
++        """Require a non-vacuous ON relationship for every possible OR branch."""
++        from sqlglot import exp
++
++        if predicate is None:
++            return False
++        if isinstance(predicate, exp.Paren):
++            return ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++        if isinstance(predicate, exp.And):
++            return (
++                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++                or ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
++            )
++        if isinstance(predicate, exp.Or):
++            return (
++                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++                and ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
++            )
++        comparison_types = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
++        if not isinstance(predicate, comparison_types):
++            return False
++
++        def sources(side: Any) -> set:
++            if side is None or side.find(exp.Select) is not None:
++                return set()
++            return {column.table.casefold() for column in side.find_all(exp.Column) if column.table}
++
++        left, right = sources(predicate.this), sources(predicate.expression)
++        return bool(
++            (joined in left and right.intersection(previous))
++            or (joined in right and left.intersection(previous))
++        )
+ 
+     def audit(
+         self,
+@@ -47,22 +131,10 @@
+         authorized_tables: Optional[Any] = None,
+         username: Optional[str] = None,
+         user_session: Optional[Any] = None,
+-        raise_on_violation: bool = False
++        raise_on_violation: bool = False,
+     ) -> GuardianResult:
+-        """
+-        Audit raw T-SQL query:
+-        1. Multi-statement injection quarantine (semicolon stacked queries).
+-        2. Dangerous token firewall.
+-        3. AST syntax parsing via sqlglot (dialect="tsql").
+-        4. AST node quarantine (blocking non-SELECT, Drop, Delete, Exec, etc.).
+-        5. Cartesian join detection.
+-        6. Strict Table-Level Privilege Enforcement (RBAC/RLC).
+-        7. Defensive T-SQL TOP 100 injection.
+-        """
+-        issues: List[str] = []
++        """Validate one AST, bind physical relations, and cap its outer result."""
+         clean_sql = raw_sql.strip()
+-
+-        # Resolve session context if provided
+         if user_session is not None:
+             if hasattr(user_session, "allowed_tables"):
+                 authorized_tables = user_session.allowed_tables
+@@ -73,185 +145,107 @@
+         elif authorized_tables is not None and hasattr(authorized_tables, "allowed_tables"):
+             authorized_tables = authorized_tables.allowed_tables
+ 
+-        # Phase 1: Fast Regex Security Screening
+-        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", clean_sql.upper()))
+-        found_destructive = tokens.intersection(DISALLOWED_TOKENS)
+-        if found_destructive:
+-            critique = {
+-                "type": "AST_SECURITY_VIOLATION",
+-                "message": f"Security Firewall blocked destructive/command token(s): {sorted(list(found_destructive))}",
+-                "failed_sql": clean_sql,
+-                "remediation": "Only read-only SELECT or WITH statements are authorized. Remove destructive clauses."
+-            }
+-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-        # Phase 2: AST Parsing and Multi-Statement Injection Check
+         try:
+-            import sqlglot
++            expression = parse_single_query(clean_sql, dialect=self.dialect)
+             from sqlglot import exp
+ 
+-            statements = sqlglot.parse(clean_sql, read=self.dialect)
+-            if not statements:
+-                critique = {
+-                    "type": "AST_SYNTAX_ERROR",
+-                    "message": "Empty or unparseable SQL statement.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Provide a valid T-SQL SELECT query."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Multi-statement injection quarantine
+-            if len(statements) > 1:
+-                critique = {
+-                    "type": "SQL_INJECTION_QUARANTINE",
+-                    "message": f"Multi-statement execution detected ({len(statements)} statements). Stacked queries are prohibited.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Submit only a single, isolated SELECT statement without semicolons or stacked commands."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            expression = statements[0]
+-
+-            # Phase 3: Enforce Read-Only SELECT Root and Quarantine Forbidden AST Nodes
+-            if not isinstance(expression, (exp.Select, exp.Union)):
+-                critique = {
+-                    "type": "INVALID_QUERY_ROOT",
+-                    "message": f"Query root is '{type(expression).__name__}', expected SELECT or WITH (Select) expression.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Structure query as a standard T-SQL SELECT or Common Table Expression (WITH ... SELECT ...)."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            forbidden_node_types = (
+-                exp.Drop, exp.Delete, exp.Update, exp.Alter, exp.Insert,
+-                exp.Command, exp.Create, exp.Grant, exp.Revoke, exp.Execute
+-            )
+-            for forbidden_type in forbidden_node_types:
+-                if expression.find(forbidden_type):
+-                    critique = {
+-                        "type": "AST_SECURITY_VIOLATION",
+-                        "message": f"Security Firewall quarantined forbidden AST node type: {forbidden_type.__name__}",
+-                        "failed_sql": clean_sql,
+-                        "remediation": "Only non-mutating SELECT queries are permitted."
+-                    }
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 4: Cartesian Product Detection (Missing Join Predicate or Vacuous ON TRUE)
+-            for join in expression.find_all(exp.Join):
+-                on_clause = join.args.get("on")
+-                has_using = join.args.get("using") is not None
+-                is_cross = join.kind == "CROSS" or "CROSS" in str(join).upper()
+-                is_vacuous_on = on_clause is None or str(on_clause).strip().upper() in ["TRUE", "1", "1 = 1", "1=1"]
+-
+-                if (is_vacuous_on and not has_using) or is_cross:
+-                    where = expression.find(exp.Where)
+-                    if not where:
+-                        critique = {
+-                            "type": "AST_CARTESIAN_PRODUCT",
+-                            "message": f"Unintended Cartesian join detected on table {join.this}. Missing explicit 'ON' predicate.",
+-                            "failed_sql": clean_sql,
+-                            "remediation": "Add an explicit 'ON tableA.col = tableB.col' predicate to prevent table explosion."
+-                        }
+-                        return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 5: Extract Referenced Tables and Filter Out CTE Aliases
+-            referenced_tables = [
+-                t.name.lower() for t in expression.find_all(exp.Table)
+-                if t.name
+-            ]
+-            cte_names = set()
+-            with_node = expression.find(exp.With)
+-            if with_node:
+-                for cte in with_node.expressions:
+-                    if hasattr(cte, "alias") and cte.alias:
+-                        cte_names.add(cte.alias.lower())
+-
+-            actual_tables = [t for t in referenced_tables if t not in cte_names]
+-
+-            # Phase 6: Strict Table-Level Privilege Enforcement (RBAC/RLC)
+-            if authorized_tables is not None:
+-                whitelist_lower = {t.strip("[]\"'").lower() for t in authorized_tables}
+-                unauthorized_tables = [t for t in actual_tables if t.strip("[]\"'").lower() not in whitelist_lower]
+-                if unauthorized_tables:
+-                    unauth_table = unauthorized_tables[0]
+-                    role_str = username or "Active Role"
+-                    violation_msg = f"SecurityViolationException: Table [{unauth_table}] is unauthorized for role [{role_str}]."
+-                    critique = {
+-                        "type": "RBAC_AUTHORIZATION_VIOLATION",
+-                        "message": violation_msg,
+-                        "failed_sql": clean_sql,
+-                        "remediation": f"Only query authorized tables from your corporate scope: {authorized_tables}."
+-                    }
++            scopes = query_scopes(expression)
++            tables = physical_tables(expression)
++            self._reject_identifier_collisions(valid_tables)
++            self._reject_identifier_collisions(authorized_tables)
++            for table in tables:
++                identity = ".".join(identifier_parts(table))
++                if authorized_tables is not None and not table_matches_allowed(
++                    table, authorized_tables, dialect=self.dialect,
++                ):
++                    role = username or "Active Role"
++                    message = f"SecurityViolationException: Table [{identity}] is unauthorized for role [{role}]."
+                     if raise_on_violation:
+-                        raise SecurityViolationException(violation_msg)
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[violation_msg])
+-
+-            # Phase 7: Schema Conformance Check (Against Database Tables)
+-            if valid_tables:
+-                valid_set = {t.lower() for t in valid_tables}
+-                unknown_tables = [tbl for tbl in actual_tables if tbl not in valid_set]
+-                if unknown_tables:
+-                    critique = {
+-                        "type": "SCHEMA_MISMATCH",
+-                        "message": f"Query references non-existent table(s): {unknown_tables}.",
+-                        "failed_sql": clean_sql,
+-                        "remediation": f"Reference only verified tables from the database schema: {valid_tables}."
+-                    }
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 8: Defensive T-SQL Safeguard (Automatic TOP 100 Injection)
+-            limit_injected = False
+-            has_limit = expression.find(exp.Limit) is not None
+-            has_offset = expression.find(exp.Offset) is not None
+-
+-            if not has_limit and not has_offset:
+-                expression = expression.limit(self.default_limit)
+-                limit_injected = True
+-                issues.append(f"Injected defensive TOP {self.default_limit} to safeguard against unindexed table explosion.")
+-
+-            sanitized_sql = expression.sql(dialect="tsql")
++                        raise SecurityViolationException(message)
++                    return self._deny(
++                        clean_sql, "RBAC_AUTHORIZATION_VIOLATION", message,
++                        f"Only query authorized relations from corporate scope: {authorized_tables}.",
++                    )
++                if valid_tables is not None and not table_matches_allowed(
++                    table, valid_tables, dialect=self.dialect,
++                ):
++                    return self._deny(
++                        clean_sql, "SCHEMA_MISMATCH",
++                        f"Query references non-existent relation [{identity}].",
++                        f"Reference only verified relations: {valid_tables}.",
++                    )
++                self._canonicalize_table(
++                    table, authorized_tables if authorized_tables is not None else valid_tables,
++                )
++
++            # An unrelated WHERE (including one inside a nested query) cannot
++            # authorize a CROSS JOIN or vacuous ON in any other SELECT scope.
++            for scope in scopes:
++                select = scope.expression
++                if not isinstance(select, exp.Select):
++                    continue
++                from_clause = select.args.get("from_") or select.args.get("from")
++                previous = set()
++                if from_clause is not None and from_clause.this is not None:
++                    previous.add(from_clause.this.alias_or_name.casefold())
++                for join in select.args.get("joins") or []:
++                    joined = join.this.alias_or_name.casefold()
++                    using = join.args.get("using")
++                    has_relationship = bool(using) or self._joins_scopes(join.args.get("on"), previous, joined)
++                    if join.kind.upper() == "CROSS" or not has_relationship:
++                        return self._deny(
++                            clean_sql, "AST_CARTESIAN_PRODUCT",
++                            f"Unintended Cartesian join detected on source {join.this}.",
++                            "Use an explicit non-vacuous ON relationship between joined sources, or USING columns.",
++                        )
++                    previous.add(joined)
++
++            # Inspect only the root limit. A nested TOP, OFFSET, TOP PERCENT,
++            # WITH TIES, parameter, or oversized TOP cannot defeat the row cap.
++            root_limit = expression.args.get("limit")
++            literal = (root_limit.expression or root_limit.args.get("count")) if root_limit is not None else None
++            safe_limit = False
++            if root_limit is not None and isinstance(literal, exp.Literal) and not literal.is_string:
++                try:
++                    count = int(literal.this)
++                    options = root_limit.args.get("limit_options")
++                    modifiers = bool(options and (options.args.get("percent") or options.args.get("with_ties")))
++                    safe_limit = 0 <= count <= self.default_limit and not modifiers
++                except (TypeError, ValueError):
++                    pass
++            limit_injected = not safe_limit
++            issues: List[str] = []
++            if limit_injected:
++                expression.set("limit", exp.Limit(expression=exp.Literal.number(self.default_limit)))
++                issues.append(f"Enforced defensive outer result limit of {self.default_limit} rows.")
++
+             return GuardianResult(
+-                is_valid=True,
+-                sanitized_sql=sanitized_sql,
+-                critique=None,
+-                issues=issues,
+-                limit_injected=limit_injected
+-            )
+-
++                True, expression.sql(dialect=self.dialect),
++                issues=issues, limit_injected=limit_injected,
++            )
+         except SecurityViolationException:
+             raise
+-        except ImportError:
+-            logger.info("sqlglot not available; applying fallback linter.")
+-            return self._fallback_audit(clean_sql, valid_tables, authorized_tables, username)
+-        except Exception as e:
+-            critique = {
+-                "type": "AST_SYNTAX_ERROR",
+-                "message": f"AST parser failed on T-SQL syntax: {str(e)}",
+-                "failed_sql": clean_sql,
+-                "remediation": "Correct T-SQL syntax errors, brackets, or unmatched parentheses."
+-            }
+-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
++        except ValidationError as error:
++            return self._deny(
++                clean_sql, error.code, error.message,
++                "Submit one read-only query using the verified, authorized schema; strict AST validation is required.",
++            )
++        except Exception as error:
++            logger.warning("AST validation failed closed: %s", error)
++            return self._deny(
++                clean_sql, "AST_PARSER_FAILURE", f"AST validation could not complete: {error}",
++                "Restore the required parser and correct SQL syntax before execution.",
++            )
+ 
+     def _fallback_audit(
+         self,
+         sql: str,
+         valid_tables: Optional[List[str]],
+         authorized_tables: Optional[List[str]],
+-        username: Optional[str]
++        username: Optional[str],
+     ) -> GuardianResult:
+-        """Heuristic fallback linter."""
+-        issues = []
+-        limit_injected = False
+-
+-        if not re.search(r"\bTOP\s+\d+", sql, re.IGNORECASE):
+-            sql = re.sub(r"^\s*SELECT\b", f"SELECT TOP {self.default_limit}", sql, count=1, flags=re.IGNORECASE)
+-            limit_injected = True
+-            issues.append(f"Injected defensive TOP {self.default_limit}.")
+-
+-        return GuardianResult(
+-            is_valid=True,
+-            sanitized_sql=sql,
+-            critique=None,
+-            issues=issues,
+-            limit_injected=limit_injected
++        """Retained legacy hook; fallback execution is expressly forbidden."""
++        return self._deny(
++            sql, "AST_PARSER_FAILURE", "Strict AST validation is unavailable; execution is prohibited.",
++            "Install and restore the required SQLGlot parser before executing queries.",
+         )
+diff --git a/deploy_bundle/agents/critic.py b/deploy_bundle/agents/critic.py
+--- a/deploy_bundle/agents/critic.py
++++ b/deploy_bundle/agents/critic.py
+@@ -1,17 +1,25 @@
+ """
+ Agent 4: Runtime Critic & Data Sanity Agent (The Evaluator)
+ Runs queries safely in timeout-guarded execution sandbox.
+-Diagnoses zero-result logic bugs, identifies domain numeric/date anomalies,
++Accepts legitimate empty results, identifies domain numeric/date anomalies,
+ and generates a formal executive analytical summary without informal emojis.
+ """
+ import logging
+ import time
+ from dataclasses import dataclass, field
+-from typing import Any, Dict, List, Optional
++from typing import Any, Dict, List, Optional, Tuple
+ 
+ import pandas as pd
+ 
+ from core.database import DatabaseEngine
++from core.sql_validation import (
++    ValidationError,
++    identifier_parts,
++    parse_single_query,
++    physical_tables,
++    query_scopes,
++    table_matches_allowed,
++)
+ 
+ logger = logging.getLogger("TextToSQL.Critic")
+ 
+@@ -35,12 +43,21 @@
+         self._col_cache: Dict[str, List[Dict[str, Any]]] = {}
+ 
+     def _get_cached_columns(self, table_name: str) -> List[Dict[str, Any]]:
+-        clean_tbl = table_name.strip("[]\"'").lower()
++        clean_tbl = table_name.casefold()
+         if clean_tbl not in self._col_cache:
+             try:
+-                self._col_cache[clean_tbl] = self.db.get_table_columns_info(table_name)
+-            except Exception:
+-                self._col_cache[clean_tbl] = []
++                columns = self.db.get_table_columns_info(table_name)
++            except Exception as error:
++                raise ValidationError(
++                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                    f"Verified metadata is unavailable for relation [{table_name}].",
++                ) from error
++            if not columns or any(not isinstance(c.get("name"), str) or not c["name"] for c in columns):
++                raise ValidationError(
++                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                    f"Verified column metadata is missing for relation [{table_name}].",
++                )
++            self._col_cache[clean_tbl] = columns
+         return self._col_cache[clean_tbl]
+ 
+     def validate_schema_grounding(
+@@ -49,76 +66,199 @@
+         authorized_tables: Optional[List[str]] = None,
+         user_session: Optional[Any] = None
+     ) -> Optional[Dict[str, Any]]:
+-        """
+-        Pre-execution AST verification:
+-        1. Ensures all referenced tables strictly belong to user_session.allowed_tables (RBAC).
+-        2. Detects hallucinated/fabricated columns not present in verified schema metadata.
++        """Bind relations and columns in their lexical query scopes before execution.
++
++        CTEs, derived outputs, projection aliases, and correlated subqueries are
++        resolved locally. A column existing in another relation or query scope
++        never establishes that the requested reference exists.
+         """
+         try:
+-            import sqlglot
+-            from sqlglot import exp
+-        except ImportError:
++            dialect = getattr(self.db, "dialect", "tsql")
++            if not isinstance(dialect, str):
++                dialect = "tsql"
++            dialect = dialect.casefold()
++            expression = parse_single_query(sql, dialect=dialect)
++            scopes = query_scopes(expression)
++            auth_tables = getattr(
++                user_session, "allowed_tables",
++                getattr(user_session, "authorized_tables", authorized_tables),
++            )
++            # Cache only within this audit: changed/revoked metadata must not be
++            # silently reused across a long-lived critic instance.
++            self._col_cache.clear()
++            for table in physical_tables(expression):
++                if auth_tables is not None and not table_matches_allowed(table, auth_tables, dialect):
++                    raise ValidationError(
++                        "HALLUCINATION_UNAUTHORIZED_TABLE",
++                        f"Hallucination / RBAC Isolation: Relation [{table.sql(dialect=dialect)}] is unauthorized for the active role.",
++                    )
++            self._validate_scoped_columns(scopes, dialect)
+             return None
+-
+-        try:
+-            expression = sqlglot.parse_one(sql, read="tsql")
+-        except Exception:
+-            return None
+-
+-        # 1. Extract CTE names to avoid mistaking CTE aliases for base tables
+-        cte_names = set()
+-        with_node = expression.find(exp.With)
+-        if with_node:
+-            for cte in with_node.expressions:
+-                if hasattr(cte, "alias") and cte.alias:
+-                    cte_names.add(cte.alias.lower())
+-
+-        # 2. Extract referenced base tables
+-        referenced_tables = [
+-            t.name for t in expression.find_all(exp.Table)
+-            if t.name and t.name.lower() not in cte_names
+-        ]
+-
+-        # 3. Check Table Authorization Whitelist (RBAC Isolation)
+-        auth_tables = getattr(user_session, "allowed_tables", getattr(user_session, "authorized_tables", authorized_tables))
+-        if auth_tables is not None:
+-            auth_set = {t.strip("[]\"'").lower() for t in auth_tables}
+-            for tbl in referenced_tables:
+-                if tbl.strip("[]\"'").lower() not in auth_set:
+-                    role_str = getattr(user_session, "username", getattr(user_session, "role_title", "Active Role"))
+-                    return {
+-                        "type": "HALLUCINATION_UNAUTHORIZED_TABLE",
+-                        "message": f"Hallucination / RBAC Isolation: Table [{tbl}] is unauthorized for role [{role_str}]. Allowed tables: {list(auth_tables)}",
+-                        "failed_sql": sql,
+-                        "remediation": f"Remove [{tbl}]. Only reference authorized tables from scope: {list(auth_tables)}."
+-                    }
+-
+-        # 4. Check for Fabricated / Non-Existent Columns
+-        valid_columns = set()
+-        for tbl in referenced_tables:
+-            clean_t = tbl.strip("[]\"'")
+-            cols = self._get_cached_columns(clean_t)
+-            for c in cols:
+-                valid_columns.add(c["name"].lower())
+-
+-        # Collect query-defined aliases and standard keywords/wildcards
+-        query_aliases = {alias.alias.lower() for alias in expression.find_all(exp.Alias) if alias.alias}
+-        query_aliases.add("*")
+-        builtins = {"1", "0", "null", "getdate", "sysdatetime", "newid", "row_number"}
+-
+-        for col_node in expression.find_all(exp.Column):
+-            if col_node.name and col_node.name != "*":
+-                col_name = col_node.name.strip("[]\"'").lower()
+-                if valid_columns:
+-                    if col_name not in valid_columns and col_name not in query_aliases and col_name not in cte_names and col_name not in builtins:
+-                        return {
+-                            "type": "HALLUCINATION_INVALID_COLUMN",
+-                            "message": f"Hallucination Detected: Fabricated column [{col_node.name}] does not exist in schema of {referenced_tables}.",
+-                            "failed_sql": sql,
+-                            "remediation": f"Column [{col_node.name}] is invalid. Select from valid verified schema columns: {sorted(list(valid_columns))}."
+-                        }
+-
+-        return None
++        except ValidationError as error:
++            return {
++                "type": error.code,
++                "message": error.message,
++                "failed_sql": sql,
++                "remediation": "Use only authorized relations and columns from verified metadata in the current query scope. Validation must succeed before execution.",
++            }
++        except Exception as error:
++            # Broken parser/metadata/scope machinery is not a proof of safety.
++            logger.warning("Schema grounding failed closed: %s", error)
++            return {
++                "type": "AST_PARSER_FAILURE",
++                "message": "Strict AST schema grounding could not be completed.",
++                "failed_sql": sql,
++                "remediation": "Restore the AST validator and verified schema metadata before executing this query.",
++            }
++
++    def _validate_scoped_columns(self, scopes: List[Any], dialect: str) -> None:
++        """Validate column ownership and expose only proven derived outputs."""
++        from sqlglot import exp
++        from sqlglot.optimizer.scope import Scope
++
++        source_cache: Dict[int, Dict[str, Tuple[Any, List[str]]]] = {}
++        output_cache: Dict[int, List[str]] = {}
++        resolving = set()
++
++        def invalid(message: str) -> None:
++            raise ValidationError("HALLUCINATION_INVALID_COLUMN", message)
++
++        def source_columns(scope: Any) -> Dict[str, Tuple[Any, List[str]]]:
++            key = id(scope)
++            if key in source_cache:
++                return source_cache[key]
++            sources = {}
++            for alias, (_, source) in scope.selected_sources.items():
++                normalized = alias.casefold()
++                if normalized in sources:
++                    invalid(f"Relation alias [{alias}] is ambiguous in this query scope.")
++                if isinstance(source, exp.Table):
++                    relation = exp.Table(this=source.this.copy())
++                    for part in ("db", "catalog"):
++                        if source.args.get(part) is not None:
++                            relation.set(part, source.args[part].copy())
++                    name = relation.sql(dialect=dialect) if len(identifier_parts(source)) > 1 else source.name
++                    metadata = self._get_cached_columns(name)
++                    for column in metadata:
++                        # Real adapters return identity fields. Legacy test
++                        # adapters may provide only the public column contract.
++                        for field, expected in (("table_schema", source.db), ("table_catalog", source.catalog)):
++                            if expected and column.get(field) and str(column[field]).casefold() != expected.casefold():
++                                raise ValidationError(
++                                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                                    f"Metadata identity does not match relation [{name}].",
++                                )
++                    names = [column["name"].casefold() for column in metadata]
++                elif isinstance(source, Scope):
++                    names = scope_outputs(source)
++                    if not names or any(not name for name in names):
++                        invalid(f"Derived relation [{alias}] has an unnamed or unresolved output.")
++                    if len(names) != len(set(names)):
++                        invalid(f"Derived relation [{alias}] has duplicate output column names.")
++                else:
++                    raise ValidationError("AST_UNSUPPORTED_SOURCE", "Unresolved relation source.")
++                sources[normalized] = (source, names)
++            source_cache[key] = sources
++            return sources
++
++        def column_owner(column: Any) -> Any:
++            parent = column.parent
++            while parent is not None and not isinstance(parent, (exp.Select, exp.SetOperation)):
++                parent = parent.parent
++            return parent
++
++        def resolve(column: Any, scope: Any) -> None:
++            sources = source_columns(scope)
++            name = column.name.casefold()
++            qualifier = column.table.casefold()
++            if qualifier:
++                if qualifier in sources:
++                    source, names = sources[qualifier]
++                    if column.db or column.catalog:
++                        if not isinstance(source, exp.Table):
++                            invalid(f"Derived alias [{column.table}] cannot be schema-qualified.")
++                        if source.alias:
++                            invalid(f"Relation alias [{column.table}] cannot be schema-qualified.")
++                        source_schema = source.db or ("dbo" if dialect == "tsql" else "")
++                        if column.db and column.db.casefold() != source_schema.casefold():
++                            invalid(f"Schema qualifier for [{column.sql()}] does not match its relation.")
++                        if column.catalog and column.catalog.casefold() != source.catalog.casefold():
++                            invalid(f"Catalog qualifier for [{column.sql()}] does not match its relation.")
++                    if name != "*" and names.count(name) != 1:
++                        invalid(f"Column [{column.sql()}] is absent or ambiguous in relation [{column.table}].")
++                    return
++                # A local alias shadows the same alias in all enclosing scopes;
++                # only entirely absent qualifiers may correlate outward.
++            else:
++                count = sum(names.count(name) for _, names in sources.values())
++                if count == 1:
++                    return
++                if count > 1:
++                    invalid(f"Unqualified column [{column.name}] is ambiguous in this query scope.")
++            if scope.can_be_correlated and scope.parent is not None:
++                resolve(column, scope.parent)
++                return
++            invalid(f"Column [{column.sql()}] cannot be resolved in this query scope.")
++
++        def scope_outputs(scope: Any) -> List[str]:
++            key = id(scope)
++            if key in output_cache:
++                return output_cache[key]
++            if key in resolving:
++                invalid("Recursive query outputs require an explicit schema policy.")
++            resolving.add(key)
++            try:
++                if isinstance(scope.expression, exp.Union):
++                    branch_scopes = getattr(scope, "set_operation_scopes", None)
++                    if branch_scopes is None:
++                        branch_scopes = getattr(scope, "union_scopes", [])
++                    branches = [scope_outputs(branch) for branch in branch_scopes]
++                    if not branches or any(len(branch) != len(branches[0]) for branch in branches):
++                        invalid("UNION branches have incompatible output columns.")
++                    names = list(branches[0])
++                else:
++                    names = []
++                    sources = source_columns(scope)
++                    for projection in scope.expression.selects:
++                        if isinstance(projection, exp.Star):
++                            if not sources:
++                                invalid("SELECT * requires a verified relation source.")
++                            for _, columns in sources.values():
++                                names.extend(columns)
++                        elif isinstance(projection, exp.Column) and projection.is_star:
++                            resolve(projection, scope)
++                            qualifier = projection.table.casefold()
++                            if qualifier not in sources:
++                                invalid("A projection wildcard must reference a local relation.")
++                            names.extend(sources[qualifier][1])
++                        else:
++                            names.append(projection.alias_or_name.casefold())
++                if scope.outer_columns:
++                    if len(scope.outer_columns) != len(names):
++                        invalid("Declared CTE/derived column aliases do not match its output width.")
++                    names = [name.casefold() for name in scope.outer_columns]
++                output_cache[key] = names
++                return names
++            finally:
++                resolving.remove(key)
++
++        for scope in scopes:
++            source_columns(scope)  # Includes metadata validation for COUNT(*).
++            outputs = scope_outputs(scope)
++            for column in scope.expression.find_all(exp.Column):
++                if column_owner(column) is not scope.expression:
++                    continue
++                # SQL Server exposes output aliases only as standalone ORDER
++                # BY terms. WHERE/JOIN/other projections cannot borrow them.
++                ordered = column.parent
++                if (
++                    not column.table and isinstance(ordered, exp.Ordered)
++                    and ordered.this is column and isinstance(ordered.parent, exp.Order)
++                    and ordered.parent.parent is scope.expression
++                    and outputs.count(column.name.casefold()) == 1
++                ):
++                    continue
++                resolve(column, scope)
+ 
+     def evaluate(
+         self,
+@@ -184,27 +324,16 @@
+         elapsed_ms = (time.perf_counter() - start_t) * 1000
+         sanity_warnings: List[str] = []
+ 
+-        # Step 2: Zero-Result Diagnosis
++        # Step 2: An empty result is a valid answer, not permission to loosen
++        # the requested conditions or row-level security predicates.
+         if df.empty or len(df) == 0:
+-            if iteration < max_iterations:
+-                critique = {
+-                    "type": "ZERO_RESULTS_RETURNED",
+-                    "message": "Query executed successfully without database errors, but returned 0 records.",
+-                    "failed_sql": sql,
+-                    "remediation": (
+-                        "Zero rows returned. Likely causes: (1) exact '=' equality check on strings "
+-                        "instead of LIKE/ILIKE, (2) overly restrictive AND conditions, (3) INNER JOIN "
+-                        "filtering out rows that LEFT JOIN would preserve. Relax filters or use LIKE '%...%'."
+-                    )
+-                }
+-                return EvaluationResult(
+-                    success=False,
+-                    df=df,
+-                    execution_time_ms=elapsed_ms,
+-                    critique=critique
+-                )
+-            else:
+-                sanity_warnings.append("Notice: Result set is empty after retries.")
++            return EvaluationResult(
++                success=True,
++                df=df,
++                execution_time_ms=elapsed_ms,
++                critique=None,
++                executive_narrative=self._synthesize_narrative(question, df, elapsed_ms, []),
++            )
+ 
+         # Step 3: Domain Sanity Checks
+         for col in df.columns:
+diff --git a/deploy_bundle/core/database.py b/deploy_bundle/core/database.py
+--- a/deploy_bundle/core/database.py
++++ b/deploy_bundle/core/database.py
+@@ -1,10 +1,11 @@
+ """
+ Enterprise Microsoft SQL Server (T-SQL) Database Engine via pyodbc.
+ Implements dynamic driver discovery, live schema introspection via INFORMATION_SCHEMA,
+-safe parameterized T-SQL value probing, and resilient local emulation fallback.
++safe parameterized T-SQL value probing, and explicitly enabled local demo emulation.
+ """
+ import contextlib
+ import logging
++import math
+ from pathlib import Path
+ import sqlite3
+ import threading
+@@ -56,10 +57,11 @@
+             conn_str = self.config.get_odbc_connection_string()
+             t_start = time.perf_counter()
+ 
+-            with pyodbc.connect(conn_str, timeout=self.config.connection_timeout_sec) as conn:
++            with contextlib.closing(pyodbc.connect(conn_str, timeout=self.config.connection_timeout_sec)) as conn:
+                 cursor = conn.cursor()
+                 cursor.execute("SELECT @@VERSION, DB_NAME(), CURRENT_USER, @@SERVERNAME;")
+                 row = cursor.fetchone()
++                cursor.close()
+                 latency_ms = (time.perf_counter() - t_start) * 1000
+ 
+                 raw_version = row[0].split("\n")[0] if row else "Microsoft SQL Server"
+@@ -79,13 +81,23 @@
+                 )
+ 
+         except Exception as odbc_err:
+-            logger.info(f"pyodbc connection attempt skipped/failed ({odbc_err}). Using resilient T-SQL local engine.")
++            if not getattr(self.config, "allow_sqlite_emulation", False):
++                self._use_pyodbc = None
++                self._connection_mode = "ERROR"
++                self._last_latency_ms = 0.0
++                return (
++                    False,
++                    f"Live SQL Server connection failed; explicit demo emulation is disabled: {odbc_err}",
++                    0.0,
++                    "ERROR",
++                )
++            logger.info("Live connection failed (%s); explicitly configured demo emulation enabled.", odbc_err)
+             self._use_pyodbc = False
+ 
+         # 2. Local T-SQL Emulation Engine
+         try:
+             t_start = time.perf_counter()
+-            with self._get_sqlite_connection() as conn:
++            with contextlib.closing(self._get_sqlite_connection()) as conn:
+                 cursor = conn.cursor()
+                 cursor.execute("SELECT sqlite_version();")
+                 ver = cursor.fetchone()[0]
+@@ -116,10 +128,15 @@
+             finally:
+                 conn.close()
+         else:
+-            with self._get_sqlite_connection() as conn:
++            if not getattr(self.config, "allow_sqlite_emulation", False):
++                raise ConnectionError("Live database connectivity is unavailable and explicit demo emulation is disabled.")
++            # sqlite3's context manager commits/rolls back; it does not close.
++            with contextlib.closing(self._get_sqlite_connection()) as conn:
+                 yield conn
+ 
+     def _get_sqlite_connection(self):
++        if not getattr(self.config, "allow_sqlite_emulation", False):
++            raise ConnectionError("SQLite emulation requires explicit SENTINEL_DEMO_MODE configuration.")
+         parent = Path(self.config.sqlite_path).parent
+         if str(parent) not in ("", "."):
+             parent.mkdir(parents=True, exist_ok=True)
+@@ -129,13 +146,18 @@
+             check_same_thread=False
+         )
+         conn.row_factory = sqlite3.Row
+-        self._ensure_information_schema_views(conn)
++        try:
++            self._ensure_information_schema_views(conn)
++        except BaseException:
++            conn.close()
++            raise
+         return conn
+ 
+     def _ensure_information_schema_views(self, conn: sqlite3.Connection):
+         """Ensure standard ANSI INFORMATION_SCHEMA views exist for T-SQL compatibility."""
+         cur = conn.cursor()
+-        cur.executescript("""
++        try:
++            cur.executescript("""
+         CREATE VIEW IF NOT EXISTS INFORMATION_SCHEMA_COLUMNS AS
+         SELECT 
+             m.name AS TABLE_NAME,
+@@ -146,8 +168,10 @@
+         FROM sqlite_master m
+         JOIN pragma_table_info(m.name) p
+         WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%';
+-        """)
+-        conn.commit()
++            """)
++            conn.commit()
++        finally:
++            cur.close()
+ 
+     def get_table_names(self, authorized_tables: Optional[Any] = None) -> List[str]:
+         """Fetch list of user table names filtered strictly by RBAC authorization."""
+@@ -216,35 +240,64 @@
+         return {t: self.get_table_schema_ddl(t, authorized_tables=authorized_tables) for t in tables}
+ 
+     def get_table_columns_info(self, table_name: str) -> List[Dict[str, Any]]:
+-        """Return list of column metadata for a given table from INFORMATION_SCHEMA."""
+-        clean_table = table_name.strip("[]")
++        """Resolve metadata for the exact catalog/schema/table, never a basename fallback."""
++        import sqlglot
++        from sqlglot import exp
++        from sqlglot.tokens import TokenType
++
++        tokens = sqlglot.Dialect.get_or_raise("tsql").tokenize(table_name)
++        if len(tokens) not in {1, 3, 5} or any(
++            token.token_type not in {TokenType.VAR, TokenType.IDENTIFIER} if index % 2 == 0
++            else token.token_type != TokenType.DOT
++            for index, token in enumerate(tokens)
++        ):
++            raise ValueError("A plain, optionally schema-qualified table identifier is required.")
++        table = sqlglot.parse_one(table_name, read="tsql", into=exp.Table)
++        if not isinstance(table, exp.Table) or not table.name or any(
++            not isinstance(part, exp.Identifier) for part in table.parts
++        ) or any(value for key, value in table.args.items() if key not in {"this", "db", "catalog"}):
++            raise ValueError("A plain, optionally schema-qualified table identifier is required.")
++        clean_table = table.name
++        table_schema = table.db or "dbo"
++        table_catalog = table.catalog or self.config.database
+         cols: List[Dict[str, Any]] = []
+ 
+         with self.get_connection() as conn:
+             cursor = conn.cursor()
+             if self._use_pyodbc:
+                 cursor.execute("""
+-                    SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
++                    SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE,
++                           TABLE_NAME, TABLE_SCHEMA, TABLE_CATALOG
+                     FROM INFORMATION_SCHEMA.COLUMNS
+-                    WHERE TABLE_NAME = ?
++                    WHERE TABLE_NAME = ? AND TABLE_SCHEMA = ? AND TABLE_CATALOG = ?
+                     ORDER BY ORDINAL_POSITION;
+-                """, (clean_table,))
++                """, (clean_table, table_schema, table_catalog))
+                 for row in cursor.fetchall():
+                     cols.append({
+                         "name": row[0],
+                         "type": str(row[1]).upper(),
+                         "notnull": str(row[2]).upper() == "NO",
+-                        "pk": False
++                        "pk": False,
++                        "table_name": row[3],
++                        "table_schema": row[4],
++                        "table_catalog": row[5]
+                     })
+             else:
+-                cursor.execute(f"PRAGMA table_info([{clean_table}]);")
++                if table_schema.casefold() not in {"dbo", "main"} or table_catalog.casefold() != self.config.database.casefold():
++                    raise PermissionError("The local emulator cannot inspect another catalog or schema.")
++                quoted_table = '"' + clean_table.replace('"', '""') + '"'
++                cursor.execute(f"PRAGMA main.table_info({quoted_table});")
+                 for row in cursor.fetchall():
+                     cols.append({
+                         "name": row[1],
+                         "type": row[2].upper(),
+                         "notnull": bool(row[3]),
+-                        "pk": bool(row[5])
++                        "pk": bool(row[5]),
++                        "table_name": clean_table,
++                        "table_schema": table_schema,
++                        "table_catalog": table_catalog
+                     })
++            cursor.close()
+         return cols
+ 
+     def get_foreign_keys(self, authorized_tables: Optional[List[str]] = None) -> List[Dict[str, str]]:
+@@ -348,33 +401,105 @@
+ 
+     def execute_query(self, sql: str, timeout_sec: Optional[int] = None) -> pd.DataFrame:
+         """
+-        Safely execute T-SQL query with timeout protection and return Pandas DataFrame.
+-        """
+-        timeout = timeout_sec or self.config.query_timeout_sec
+-        result_container: Dict[str, Any] = {"df": None, "error": None}
+-
++        Execute synchronously with native cancellation and bounded result materialization.
++
++        ODBC's statement timeout stops work in the driver; SQLite's progress handler
++        interrupts its virtual machine. No background query thread survives a timeout.
++        This boundary expects SQL already approved by the AST Guardian.
++        """
++        timeout = float(self.config.query_timeout_sec if timeout_sec is None else timeout_sec)
++        if not math.isfinite(timeout) or timeout <= 0:
++            raise ValueError("Query timeout must be a finite, positive number of seconds.")
++        max_rows = int(getattr(self.config, "max_result_rows", 10000))
++        max_bytes = int(getattr(self.config, "max_result_bytes", 10 * 1024 * 1024))
++        if max_rows <= 0 or max_bytes <= 0:
++            raise ValueError("Result row and byte budgets must be positive.")
++        deadline = time.monotonic() + timeout
+         exec_sql = sql
+         if not self._use_pyodbc:
+             exec_sql = self._adapt_tsql_for_emulation(sql)
+-
+-        def _worker():
++        with self.get_connection() as conn:
++            cursor = None
++            interrupted = False
++            cancelled = False
++
++            def _cancel():
++                nonlocal cancelled
++                if cancelled:
++                    return
++                cancelled = True
++                if self._use_pyodbc:
++                    if cursor is not None:
++                        cursor.cancel()
++                else:
++                    conn.interrupt()
++
++            def _progress():
++                nonlocal interrupted
++                if time.monotonic() >= deadline:
++                    interrupted = True
++                    _cancel()
++                    return 1
++                return 0
++
+             try:
+-                with self.get_connection() as conn:
+-                    result_container["df"] = pd.read_sql_query(exec_sql, conn)
+-            except Exception as e:
+-                result_container["error"] = e
+-
+-        thread = threading.Thread(target=_worker)
+-        thread.start()
+-        thread.join(timeout=float(timeout))
+-
+-        if thread.is_alive():
+-            raise TimeoutError(f"Query execution timed out after {timeout} seconds.")
+-
+-        if result_container["error"] is not None:
+-            raise result_container["error"]
+-
+-        return result_container["df"] if result_container["df"] is not None else pd.DataFrame()
++                if self._use_pyodbc:
++                    # pyodbc exposes SQL_ATTR_QUERY_TIMEOUT on the connection.
++                    # Unsupported timeout configuration is an error, never a fallback.
++                    conn.timeout = max(1, math.ceil(max(0, deadline - time.monotonic())))
++                    conn.autocommit = False
++                else:
++                    conn.execute("PRAGMA query_only = ON;")
++                    remaining_ms = max(1, math.ceil(max(0, deadline - time.monotonic()) * 1000))
++                    conn.execute(f"PRAGMA busy_timeout = {remaining_ms};")
++                    conn.set_progress_handler(_progress, 1000)
++                cursor = conn.cursor()
++                if time.monotonic() >= deadline:
++                    raise TimeoutError("The query deadline elapsed before execution.")
++                cursor.execute(exec_sql)
++                if cursor.description is None:
++                    raise ValueError("Only queries returning a result set may be executed.")
++                columns = [item[0] for item in cursor.description]
++                records = []
++                total_bytes = 0
++                while True:
++                    if time.monotonic() >= deadline:
++                        raise TimeoutError("The query deadline elapsed during execution.")
++                    batch = cursor.fetchmany(min(256, max_rows + 1 - len(records)))
++                    if time.monotonic() >= deadline:
++                        raise TimeoutError("The query deadline elapsed while fetching results.")
++                    if not batch:
++                        break
++                    for row in batch:
++                        record = tuple(row)
++                        total_bytes += sum(len(str(value).encode("utf-8")) for value in record if value is not None)
++                        records.append(record)
++                        if len(records) > max_rows or total_bytes > max_bytes:
++                            _cancel()
++                            raise ValueError("Query result exceeds the configured row or byte budget.")
++                return pd.DataFrame.from_records(records, columns=columns)
++            except Exception as exc:
++                sqlstate = str(exc.args[0]) if exc.args else ""
++                timed_out = isinstance(exc, TimeoutError) or interrupted or sqlstate in {"HYT00", "HYT01"}
++                if not self._use_pyodbc and isinstance(exc, sqlite3.OperationalError):
++                    timed_out = timed_out or (time.monotonic() >= deadline and "locked" in str(exc).lower())
++                if timed_out:
++                    try:
++                        _cancel()
++                    except Exception as cancel_exc:
++                        # SQL execution has already returned here. Surface unsupported
++                        # cancellation rather than silently claiming successful cleanup.
++                        raise RuntimeError("Driver cancellation failed after query timeout.") from cancel_exc
++                    raise TimeoutError(f"Query execution timed out after {timeout:g} seconds.") from exc
++                raise
++            finally:
++                if not self._use_pyodbc:
++                    conn.set_progress_handler(None, 0)
++                try:
++                    conn.rollback()
++                finally:
++                    if cursor is not None:
++                        cursor.close()
+ 
+     def _adapt_tsql_for_emulation(self, sql: str) -> str:
+         """
+@@ -383,10 +508,55 @@
+         """
+         try:
+             import sqlglot
+-            expression = sqlglot.parse_one(sql, read="tsql")
++            from sqlglot import exp
++            expressions = sqlglot.parse(sql, read="tsql")
++            if len(expressions) != 1 or expressions[0] is None:
++                raise ValueError("Exactly one SQL statement is required.")
++            expression = expressions[0]
++        except Exception as exc:
++            raise ValueError("AST_PARSER_FAILURE: Cannot safely transpile SQL for the local emulator.") from exc
++
++        if isinstance(expression, (exp.Select, exp.Union)):
++            from core.sql_validation import identifier_parts, physical_tables
++
++            # T-SQL permits recursive CTEs without the RECURSIVE keyword.
++            # SQLGlot's lexical scope resolver needs this semantic flag to
++            # distinguish an unqualified self-reference from a physical table.
++            # Qualified relations remain physical and undergo the checks below.
++            for with_clause in expression.find_all(exp.With):
++                with_clause.set("recursive", True)
++
++            # SQL Server's approved default schema is dbo; the emulator stores
++            # these same relations in SQLite's main database. Resolve physical
++            # sources lexically so a CTE with a matching name stays a CTE.
++            for table in physical_tables(expression):
++                parts = identifier_parts(table)
++                if (
++                    len(parts) > 3
++                    or (table.db and table.db.casefold() not in {"dbo", "main"})
++                    or (table.catalog and table.catalog.casefold() != self.config.database.casefold())
++                ):
++                    raise PermissionError("The local emulator cannot query another catalog or schema.")
++                table.set("db", exp.to_identifier("main"))
++                table.set("catalog", None)
++
++            # Preserve legitimate fully qualified column references after the
++            # relation rewrite. Alias/column ownership is proven by the Critic.
++            for column in expression.find_all(exp.Column):
++                if not column.db and not column.catalog:
++                    continue
++                if (
++                    (column.db and column.db.casefold() not in {"dbo", "main"})
++                    or (column.catalog and column.catalog.casefold() != self.config.database.casefold())
++                ):
++                    raise PermissionError("The local emulator cannot query another catalog or schema.")
++                column.set("db", exp.to_identifier("main"))
++                column.set("catalog", None)
++
++        try:
+             return expression.sql(dialect="sqlite")
+-        except Exception:
+-            return sql
++        except Exception as exc:
++            raise ValueError("AST_PARSER_FAILURE: Cannot safely transpile SQL for the local emulator.") from exc
+ 
+ 
+ # Compatibility Alias
+diff --git a/deploy_bundle/core/sql_validation.py b/deploy_bundle/core/sql_validation.py
+new file mode 100644
+--- /dev/null
++++ b/deploy_bundle/core/sql_validation.py
+@@ -0,0 +1,205 @@
++"""Fail-closed SQL parsing and lexical relation binding shared by safety agents.
++
++This module deliberately imports SQLGlot at validation time: a missing or broken
++parser is a denial, never an invitation to use a regular-expression executor.
++"""
++from typing import Any, Iterable, List, Tuple
++
++
++# This is a reviewed semantic allowlist, not a list of every function SQLGlot
++# can parse. In particular, parser support does not authorize server identity,
++# catalog introspection, sequences, external I/O, or application-defined code.
++# Exact AST types prevent an unapproved function subclass from inheriting trust.
++APPROVED_ANALYTICAL_FUNCTION_TYPES = frozenset({
++    # Aggregation and bounded scalar arithmetic.
++    "Sum", "Count", "Avg", "Min", "Max", "Stddev", "StddevPop",
++    "StddevSamp", "Variance", "VariancePop", "Abs", "Ceil", "Floor",
++    "Round", "Pow", "Sqrt", "Sign", "Ln", "Log", "Exp",
++    # Conditions, casts, and subquery predicates.
++    "Case", "If", "Coalesce", "Nullif", "Cast", "TryCast", "Convert", "Exists",
++    # String transformations; no file/network/system access.
++    "Lower", "Upper", "Length", "Trim", "Substring", "Left", "Right",
++    "Replace", "Concat", "ConcatWs", "StrPosition", "Ascii", "Chr",
++    "Unicode", "Reverse",
++    # Date arithmetic, formatting, and the clock. SQLGlot introduces conversion
++    # nodes while parsing T-SQL DATEADD/DATEDIFF/YEAR/EOMONTH expressions.
++    "CurrentTimestamp", "CurrentDate", "CurrentTime", "DateAdd", "DateSub",
++    "DateDiff", "DateTrunc", "Extract", "Year", "Month", "Day", "LastDay",
++    "DateFromParts", "TimeToStr", "TimeStrToTime", "StrToTime", "TsOrDsToDate",
++    "TsOrDsToDatetime", "TsOrDsAdd", "TsOrDsDiff",
++    # Analytical window operations.
++    "RowNumber", "Rank", "DenseRank", "PercentRank", "CumeDist", "Ntile",
++    "Lag", "Lead", "FirstValue", "LastValue", "NthValue",
++})
++
++# These SQL Server builtins remain Anonymous nodes in the pinned SQLGlot
++# version. Only these exact, unqualified names are authorized. Qualified calls
++# are always denied, even when their final name resembles an approved builtin.
++APPROVED_TSQL_ANONYMOUS_FUNCTIONS = frozenset({
++    "getutcdate", "sysutcdatetime", "stdevp", "var", "varp", "datalength", "nchar",
++})
++
++
++class ValidationError(ValueError):
++    """A stable denial code with an explanation suitable for an agent critique."""
++
++    def __init__(self, code: str, message: str):
++        super().__init__(message)
++        self.code = code
++        self.message = message
++
++
++def parse_single_query(sql: str, dialect: str = "tsql") -> Any:
++    """Parse exactly one read-only SELECT/UNION, including read-only CTEs."""
++    try:
++        import sqlglot
++        from sqlglot import exp
++        from sqlglot.errors import ErrorLevel
++    except Exception as error:
++        raise ValidationError("AST_PARSER_FAILURE", "The required AST parser is unavailable.") from error
++
++    try:
++        statements = sqlglot.parse(sql, read=dialect, error_level=ErrorLevel.RAISE)
++    except Exception as error:
++        raise ValidationError("AST_PARSER_FAILURE", f"Strict AST parsing failed: {error}") from error
++
++    statements = [statement for statement in statements if statement is not None]
++    if not statements:
++        raise ValidationError("AST_PARSER_FAILURE", "No parseable SQL statement was provided.")
++    if len(statements) != 1:
++        raise ValidationError("SQL_INJECTION_QUARANTINE", "Stacked statements are prohibited.")
++
++    expression = statements[0]
++    # SELECT INTO, writable CTEs, and locking reads are not read-only even when
++    # their outermost expression is SELECT. Inspect the entire tree first.
++    forbidden_names = (
++        "Drop", "Delete", "Update", "Alter", "Insert", "Command", "Create",
++        "Grant", "Revoke", "Execute", "Into", "Copy", "Merge", "Transaction",
++        "Commit", "Rollback", "TruncateTable", "Lock", "Use", "Set",
++    )
++    forbidden_types = tuple(
++        node_type for name in forbidden_names
++        if isinstance((node_type := getattr(exp, name, None)), type)
++    )
++    for node in expression.walk():
++        if isinstance(node, forbidden_types):
++            raise ValidationError(
++                "AST_SECURITY_VIOLATION",
++                f"Read-only SQL cannot contain {type(node).__name__} nodes.",
++            )
++        if isinstance(node, exp.Parameter) and isinstance(node.this, exp.Parameter):
++            raise ValidationError(
++                "AST_SECURITY_VIOLATION",
++                "Server/session system variables are outside the analytical query policy.",
++            )
++        # SQLGlot models AND/OR as Func subclasses for AST construction. They
++        # are logical SQL syntax, not callable functions or policy exemptions
++        # for any of their operands; the walk still inspects both operands.
++        if isinstance(node, exp.Func) and not isinstance(node, (exp.And, exp.Or)):
++            if isinstance(node.parent, exp.Dot):
++                raise ValidationError(
++                    "AST_UNSUPPORTED_FUNCTION",
++                    "Schema-qualified, catalog-qualified, and receiver-method functions are not authorized.",
++                )
++            if isinstance(node, exp.Anonymous):
++                approved = (
++                    dialect.lower() == "tsql"
++                    and node.name.casefold() in APPROVED_TSQL_ANONYMOUS_FUNCTIONS
++                )
++            else:
++                approved = type(node).__name__ in APPROVED_ANALYTICAL_FUNCTION_TYPES
++            if not approved:
++                raise ValidationError(
++                    "AST_UNSUPPORTED_FUNCTION",
++                    f"Function [{node.name if isinstance(node, exp.Anonymous) else node.sql_name()}] is not in the approved analytical function policy.",
++                )
++    if not isinstance(expression, (exp.Select, exp.Union)):
++        raise ValidationError(
++            "INVALID_QUERY_ROOT",
++            f"Query root {type(expression).__name__} must be SELECT or UNION.",
++        )
++    return expression
++
++
++# Descriptive alias retained for callers that use the read-only wording.
++parse_readonly_query = parse_single_query
++
++
++def query_scopes(expression: Any) -> List[Any]:
++    """Return child-first lexical scopes, rejecting unsupported FROM sources."""
++    try:
++        from sqlglot import exp
++        from sqlglot.optimizer.scope import Scope, traverse_scope
++
++        scopes = list(traverse_scope(expression))
++        if not scopes:
++            raise ValidationError("AST_SCOPE_FAILURE", "The query has no resolvable SELECT scope.")
++        for scope in scopes:
++            if not isinstance(scope.expression, (exp.Select, exp.Union)):
++                raise ValidationError("AST_UNSUPPORTED_SOURCE", "Only SELECT query sources are supported.")
++            if scope.udtfs or scope.lateral_sources:
++                raise ValidationError("AST_UNSUPPORTED_SOURCE", "Table-valued or lateral sources are not authorized.")
++            for _, source in scope.selected_sources.values():
++                if isinstance(source, exp.Table):
++                    identifier_parts(source)
++                    if source.args.get("pivots"):
++                        raise ValidationError("AST_UNSUPPORTED_SOURCE", "Pivoted sources require an explicit policy.")
++                elif not isinstance(source, Scope):
++                    raise ValidationError("AST_UNSUPPORTED_SOURCE", "Unresolved query source cannot be authorized.")
++        return scopes
++    except ValidationError:
++        raise
++    except Exception as error:
++        raise ValidationError("AST_SCOPE_FAILURE", f"Lexical source binding failed: {error}") from error
++
++
++def identifier_parts(table: Any) -> Tuple[str, ...]:
++    """Return the full catalog/schema/relation identity, never just a basename."""
++    from sqlglot import exp
++
++    parts = table.parts
++    if not parts or any(not isinstance(part, exp.Identifier) for part in parts):
++        raise ValidationError("AST_UNSUPPORTED_SOURCE", "Only static relation identifiers are supported.")
++    return tuple(part.name.casefold() for part in parts)
++
++
++def physical_tables(expression: Any) -> List[Any]:
++    """Resolve real relations separately from lexically bound CTE/derived names."""
++    from sqlglot import exp
++
++    tables: List[Any] = []
++    seen = set()
++    for scope in query_scopes(expression):
++        for _, source in scope.selected_sources.values():
++            if isinstance(source, exp.Table) and id(source) not in seen:
++                tables.append(source)
++                seen.add(id(source))
++    return tables
++
++
++def table_matches_allowed(table: Any, allowed_tables: Iterable[str], dialect: str = "tsql") -> bool:
++    """Match explicit identities exactly, with only the legacy dbo exception.
++
++    A bare legacy whitelist entry authorizes ``Customer`` and ``dbo.Customer``
++    in T-SQL, but never ``private.Customer`` or ``other_db.dbo.Customer``.
++    Explicitly qualified entries do not authorize an ambiguous bare name.
++    """
++    from sqlglot import exp
++
++    actual = identifier_parts(table)
++    for allowed_name in allowed_tables:
++        try:
++            candidate = exp.to_table(str(allowed_name), dialect=dialect)
++            if candidate.alias:
++                continue
++            permitted = identifier_parts(candidate)
++        except Exception:
++            continue
++        if actual == permitted:
++            return True
++        if (
++            dialect.lower() == "tsql" and len(permitted) == 1
++            and actual == ("dbo", permitted[0])
++        ):
++            return True
++    return False
+diff --git a/deploy_bundle/core/config.py b/deploy_bundle/core/config.py
+--- a/deploy_bundle/core/config.py
++++ b/deploy_bundle/core/config.py
+@@ -62,7 +62,8 @@
+     trust_server_certificate: bool = os.getenv("MSSQL_TRUST_SERVER_CERTIFICATE", "yes").lower() in ("yes", "true", "1")
+     encrypt: str = os.getenv("MSSQL_ENCRYPT", "optional")
+ 
+-    # Local fallback storage for resilient offline testing
++    # Offline emulation is an explicit demo choice, never a production fallback.
++    allow_sqlite_emulation: bool = os.getenv("SENTINEL_DEMO_MODE", "false").lower() in ("yes", "true", "1")
+     sqlite_path: str = os.getenv("SQLITE_PATH", "data/chinook.db")
+     connection_timeout_sec: int = int(os.getenv("MSSQL_TIMEOUT", "10"))
+     query_timeout_sec: int = int(os.getenv("MSSQL_QUERY_TIMEOUT", "15"))
+diff --git a/deploy_bundle/agents/orchestrator.py b/deploy_bundle/agents/orchestrator.py
+--- a/deploy_bundle/agents/orchestrator.py
++++ b/deploy_bundle/agents/orchestrator.py
+@@ -22,6 +22,16 @@
+ from core.vanna_client import VannaTextToSQLEngine
+ 
+ logger = logging.getLogger("TextToSQL.Orchestrator")
++
++# Regeneration can repair a known-catalog typo, but cannot repair an unavailable
++# authorization boundary or convert a permission violation into permission.
++TERMINAL_CRITIQUE_TYPES = frozenset({
++    "AST_PARSER_FAILURE", "AST_SCOPE_FAILURE", "AST_UNSUPPORTED_SOURCE", "AST_UNSUPPORTED_FUNCTION",
++    "AST_IDENTIFIER_COLLISION",
++    "AST_SECURITY_VIOLATION", "SQL_INJECTION_QUARANTINE", "INVALID_QUERY_ROOT",
++    "RBAC_AUTHORIZATION_VIOLATION", "HALLUCINATION_UNAUTHORIZED_TABLE",
++    "HALLUCINATION_SCHEMA_UNAVAILABLE", "EXECUTION_TIMEOUT",
++})
+ 
+ 
+ @dataclass
+@@ -95,9 +105,6 @@
+         events: List[AgentEvent] = []
+         retry_history: List[RetryRecord] = []
+ 
+-        authorized_tables = user_session.authorized_tables if user_session else None
+-        username = user_session.username if user_session else "system"
+-
+         # STAGE 0: Intent Routing & Operational Boundaries Check
+         intent_res = self.classify_intent(question, user_session=user_session)
+         if intent_res.intent == IntentType.CAPABILITY_HELP:
+@@ -127,6 +134,30 @@
+             events.append(ev)
+             if on_event:
+                 on_event(ev)
++
++        # HELP remains available without a session; querying never inherits an
++        # unrestricted implicit system identity from an omitted principal.
++        if not isinstance(user_session, UserSession) or not user_session.username.strip():
++            message = "AUTHENTICATION_REQUIRED: An authenticated user session is required for data queries."
++            _log_event("Authorization", "failed", message, details={"type": "AUTHENTICATION_REQUIRED"})
++            return OrchestrationResult(
++                success=False, final_sql="", df=pd.DataFrame(), executive_narrative="",
++                events=events, retry_history=retry_history, error_message=message,
++                execution_time_ms=(time.perf_counter() - start_time) * 1000,
++            )
++        authorized_tables = list(user_session.allowed_tables)
++        username = user_session.username
++
++        def _terminal_failure(agent: str, sql: str, denial: Dict[str, Any]) -> OrchestrationResult:
++            code = denial.get("type", "VALIDATION_FAILURE")
++            message = f"{code}: {denial.get('message', 'Validation failed.')}"
++            _log_event(agent, "failed", message, details={"critique": denial})
++            return OrchestrationResult(
++                success=False, final_sql=sql, df=pd.DataFrame(), executive_narrative="",
++                events=events, retry_history=retry_history, schema_card=schema_card,
++                execution_time_ms=(time.perf_counter() - start_time) * 1000,
++                error_message=message,
++            )
+ 
+         # STAGE 1: Schema & Data Reconnaissance (The Explorer)
+         _log_event("Explorer", "running", f"Pruning DDLs within authorized scope for user '{username}'...")
+@@ -224,13 +255,17 @@
+             )
+ 
+             if not guardian_result.is_valid:
++                critique = dict(guardian_result.critique or {
++                    "type": "AST_PARSER_FAILURE", "message": "Guardian returned no validation verdict."
++                })
++                critique["agent"] = "Guardian"
++                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
++                    return _terminal_failure("Guardian", current_sql, critique)
+                 _log_event(
+                     "Guardian", "retry",
+-                    f"AST Policy Violation: {guardian_result.critique.get('message')}",
+-                    details={"critique": guardian_result.critique}
++                    f"AST Policy Violation: {critique.get('message')}",
++                    details={"critique": critique}
+                 )
+-                critique = guardian_result.critique
+-                critique["agent"] = "Guardian"
+                 iteration += 1
+                 continue
+ 
+@@ -254,13 +289,17 @@
+             )
+ 
+             if not eval_result.success:
++                critique = dict(eval_result.critique or {
++                    "type": "AST_PARSER_FAILURE", "message": "Evaluator returned no validation verdict."
++                })
++                critique["agent"] = "Evaluator"
++                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
++                    return _terminal_failure("Evaluator", sanitized_sql, critique)
+                 _log_event(
+                     "Evaluator", "retry",
+-                    f"Evaluator triggered diagnostic retry: {eval_result.critique.get('message')}",
+-                    details={"critique": eval_result.critique}
++                    f"Evaluator triggered diagnostic retry: {critique.get('message')}",
++                    details={"critique": critique}
+                 )
+-                critique = eval_result.critique
+-                critique["agent"] = "Evaluator"
+                 iteration += 1
+                 continue
+ 
+@@ -290,7 +329,7 @@
+             success=False,
+             final_sql=sanitized_sql or current_sql,
+             df=pd.DataFrame(),
+-            executive_narrative="Unable to synthesize a verified, non-empty T-SQL query within retry limits.",
++            executive_narrative="Unable to synthesize a verified T-SQL query within retry limits.",
+             events=events,
+             retry_history=retry_history,
+             schema_card=schema_card,
+diff --git a/agents/guardian.py b/agents/guardian.py
+--- a/agents/guardian.py
++++ b/agents/guardian.py
+@@ -1,27 +1,26 @@
+-"""
+-Agent 3: Deterministic AST SQL Injection Firewall & RLC Enforcement (The Guardian)
+-Parses T-SQL queries into an Abstract Syntax Tree (AST) using sqlglot (dialect="tsql").
+-Enforces anti-injection quarantine, table-level RBAC/RLC authorization,
+-Cartesian join defense, and automatic T-SQL TOP 100 injection.
+-"""
++"""Deterministic, fail-closed AST firewall and table authorization for SQL."""
+ import logging
+-import re
+ from dataclasses import dataclass, field
+-from typing import Any, Dict, List, Optional, Set
++from typing import Any, Dict, List, Optional
++
++from core.sql_validation import (
++    ValidationError, identifier_parts, parse_single_query, physical_tables,
++    query_scopes, table_matches_allowed,
++)
+ 
+ logger = logging.getLogger("TextToSQL.Guardian")
+ 
+-# Destructive and dangerous T-SQL tokens blocked by firewall
++# Retained for callers importing the legacy token registry. Authorization uses
++# parsed nodes, so harmless words inside comments/literals do not become SQL.
+ DISALLOWED_TOKENS = {
+     "DROP", "DELETE", "UPDATE", "ALTER", "TRUNCATE", "INSERT",
+     "REPLACE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
+-    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET"
++    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET",
+ }
+ 
+ 
+ class SecurityViolationException(PermissionError):
+     """Raised or quarantined when an unauthorized table is referenced."""
+-    pass
+ 
+ 
+ @dataclass
+@@ -34,11 +33,96 @@
+ 
+ 
+ class ASTGuardianAgent:
+-    """Agent 3: AST Static Linter & Firewall Agent (The Guardian) for T-SQL."""
++    """Read-only query firewall preserving the original Guardian contract."""
+ 
+     def __init__(self, default_limit: int = 100, dialect: str = "tsql"):
++        if not isinstance(default_limit, int) or default_limit <= 0:
++            raise ValueError("default_limit must be a positive integer")
+         self.default_limit = default_limit
+         self.dialect = dialect.lower()
++
++    @staticmethod
++    def _deny(sql: str, code: str, message: str, remediation: str) -> GuardianResult:
++        critique = {
++            "type": code, "message": message, "failed_sql": sql,
++            "remediation": remediation,
++        }
++        return GuardianResult(False, sql, critique=critique, issues=[message])
++
++    def _reject_identifier_collisions(self, names: Optional[List[str]]) -> None:
++        """Case-folded lookup must not collapse two distinct catalog objects."""
++        from sqlglot import exp
++
++        seen = {}
++        for name in names or []:
++            relation = exp.to_table(str(name), dialect=self.dialect)
++            if self.dialect == "tsql" and len(identifier_parts(relation)) == 1:
++                relation.set("db", exp.to_identifier("dbo"))
++            folded = identifier_parts(relation)
++            spelling = tuple(part.name for part in relation.parts)
++            if folded in seen and seen[folded] != spelling:
++                raise ValidationError(
++                    "AST_IDENTIFIER_COLLISION",
++                    f"Distinct relation spellings {seen[folded]} and {spelling} collide under identifier matching.",
++                )
++            seen[folded] = spelling
++
++    def _canonicalize_table(self, table: Any, names: Optional[List[str]]) -> None:
++        """Render the permitted physical identity, never an implicit schema."""
++        from sqlglot import exp
++
++        canonical = table.copy()
++        for name in names or []:
++            if table_matches_allowed(table, [name], dialect=self.dialect):
++                canonical = exp.to_table(str(name), dialect=self.dialect)
++                break
++        if self.dialect == "tsql" and len(identifier_parts(canonical)) == 1:
++            canonical.set("db", exp.to_identifier("dbo"))
++
++        # Table aliases remain query-owned names, separate from the authorized
++        # physical identifier. Keep implicit table qualifiers working when a
++        # case-insensitive match is rendered using its approved spelling.
++        original_name = table.this.copy()
++        changed_name = table.name != canonical.name
++        for key in ("this", "db", "catalog"):
++            value = canonical.args.get(key)
++            table.set(key, value.copy() if value is not None else None)
++        if changed_name and not table.alias:
++            table.set("alias", exp.TableAlias(this=original_name))
++
++    @staticmethod
++    def _joins_scopes(predicate: Any, previous: set, joined: str) -> bool:
++        """Require a non-vacuous ON relationship for every possible OR branch."""
++        from sqlglot import exp
++
++        if predicate is None:
++            return False
++        if isinstance(predicate, exp.Paren):
++            return ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++        if isinstance(predicate, exp.And):
++            return (
++                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++                or ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
++            )
++        if isinstance(predicate, exp.Or):
++            return (
++                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
++                and ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
++            )
++        comparison_types = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
++        if not isinstance(predicate, comparison_types):
++            return False
++
++        def sources(side: Any) -> set:
++            if side is None or side.find(exp.Select) is not None:
++                return set()
++            return {column.table.casefold() for column in side.find_all(exp.Column) if column.table}
++
++        left, right = sources(predicate.this), sources(predicate.expression)
++        return bool(
++            (joined in left and right.intersection(previous))
++            or (joined in right and left.intersection(previous))
++        )
+ 
+     def audit(
+         self,
+@@ -47,22 +131,10 @@
+         authorized_tables: Optional[Any] = None,
+         username: Optional[str] = None,
+         user_session: Optional[Any] = None,
+-        raise_on_violation: bool = False
++        raise_on_violation: bool = False,
+     ) -> GuardianResult:
+-        """
+-        Audit raw T-SQL query:
+-        1. Multi-statement injection quarantine (semicolon stacked queries).
+-        2. Dangerous token firewall.
+-        3. AST syntax parsing via sqlglot (dialect="tsql").
+-        4. AST node quarantine (blocking non-SELECT, Drop, Delete, Exec, etc.).
+-        5. Cartesian join detection.
+-        6. Strict Table-Level Privilege Enforcement (RBAC/RLC).
+-        7. Defensive T-SQL TOP 100 injection.
+-        """
+-        issues: List[str] = []
++        """Validate one AST, bind physical relations, and cap its outer result."""
+         clean_sql = raw_sql.strip()
+-
+-        # Resolve session context if provided
+         if user_session is not None:
+             if hasattr(user_session, "allowed_tables"):
+                 authorized_tables = user_session.allowed_tables
+@@ -73,185 +145,107 @@
+         elif authorized_tables is not None and hasattr(authorized_tables, "allowed_tables"):
+             authorized_tables = authorized_tables.allowed_tables
+ 
+-        # Phase 1: Fast Regex Security Screening
+-        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", clean_sql.upper()))
+-        found_destructive = tokens.intersection(DISALLOWED_TOKENS)
+-        if found_destructive:
+-            critique = {
+-                "type": "AST_SECURITY_VIOLATION",
+-                "message": f"Security Firewall blocked destructive/command token(s): {sorted(list(found_destructive))}",
+-                "failed_sql": clean_sql,
+-                "remediation": "Only read-only SELECT or WITH statements are authorized. Remove destructive clauses."
+-            }
+-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-        # Phase 2: AST Parsing and Multi-Statement Injection Check
+         try:
+-            import sqlglot
++            expression = parse_single_query(clean_sql, dialect=self.dialect)
+             from sqlglot import exp
+ 
+-            statements = sqlglot.parse(clean_sql, read=self.dialect)
+-            if not statements:
+-                critique = {
+-                    "type": "AST_SYNTAX_ERROR",
+-                    "message": "Empty or unparseable SQL statement.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Provide a valid T-SQL SELECT query."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Multi-statement injection quarantine
+-            if len(statements) > 1:
+-                critique = {
+-                    "type": "SQL_INJECTION_QUARANTINE",
+-                    "message": f"Multi-statement execution detected ({len(statements)} statements). Stacked queries are prohibited.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Submit only a single, isolated SELECT statement without semicolons or stacked commands."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            expression = statements[0]
+-
+-            # Phase 3: Enforce Read-Only SELECT Root and Quarantine Forbidden AST Nodes
+-            if not isinstance(expression, (exp.Select, exp.Union)):
+-                critique = {
+-                    "type": "INVALID_QUERY_ROOT",
+-                    "message": f"Query root is '{type(expression).__name__}', expected SELECT or WITH (Select) expression.",
+-                    "failed_sql": clean_sql,
+-                    "remediation": "Structure query as a standard T-SQL SELECT or Common Table Expression (WITH ... SELECT ...)."
+-                }
+-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            forbidden_node_types = (
+-                exp.Drop, exp.Delete, exp.Update, exp.Alter, exp.Insert,
+-                exp.Command, exp.Create, exp.Grant, exp.Revoke, exp.Execute
+-            )
+-            for forbidden_type in forbidden_node_types:
+-                if expression.find(forbidden_type):
+-                    critique = {
+-                        "type": "AST_SECURITY_VIOLATION",
+-                        "message": f"Security Firewall quarantined forbidden AST node type: {forbidden_type.__name__}",
+-                        "failed_sql": clean_sql,
+-                        "remediation": "Only non-mutating SELECT queries are permitted."
+-                    }
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 4: Cartesian Product Detection (Missing Join Predicate or Vacuous ON TRUE)
+-            for join in expression.find_all(exp.Join):
+-                on_clause = join.args.get("on")
+-                has_using = join.args.get("using") is not None
+-                is_cross = join.kind == "CROSS" or "CROSS" in str(join).upper()
+-                is_vacuous_on = on_clause is None or str(on_clause).strip().upper() in ["TRUE", "1", "1 = 1", "1=1"]
+-
+-                if (is_vacuous_on and not has_using) or is_cross:
+-                    where = expression.find(exp.Where)
+-                    if not where:
+-                        critique = {
+-                            "type": "AST_CARTESIAN_PRODUCT",
+-                            "message": f"Unintended Cartesian join detected on table {join.this}. Missing explicit 'ON' predicate.",
+-                            "failed_sql": clean_sql,
+-                            "remediation": "Add an explicit 'ON tableA.col = tableB.col' predicate to prevent table explosion."
+-                        }
+-                        return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 5: Extract Referenced Tables and Filter Out CTE Aliases
+-            referenced_tables = [
+-                t.name.lower() for t in expression.find_all(exp.Table)
+-                if t.name
+-            ]
+-            cte_names = set()
+-            with_node = expression.find(exp.With)
+-            if with_node:
+-                for cte in with_node.expressions:
+-                    if hasattr(cte, "alias") and cte.alias:
+-                        cte_names.add(cte.alias.lower())
+-
+-            actual_tables = [t for t in referenced_tables if t not in cte_names]
+-
+-            # Phase 6: Strict Table-Level Privilege Enforcement (RBAC/RLC)
+-            if authorized_tables is not None:
+-                whitelist_lower = {t.strip("[]\"'").lower() for t in authorized_tables}
+-                unauthorized_tables = [t for t in actual_tables if t.strip("[]\"'").lower() not in whitelist_lower]
+-                if unauthorized_tables:
+-                    unauth_table = unauthorized_tables[0]
+-                    role_str = username or "Active Role"
+-                    violation_msg = f"SecurityViolationException: Table [{unauth_table}] is unauthorized for role [{role_str}]."
+-                    critique = {
+-                        "type": "RBAC_AUTHORIZATION_VIOLATION",
+-                        "message": violation_msg,
+-                        "failed_sql": clean_sql,
+-                        "remediation": f"Only query authorized tables from your corporate scope: {authorized_tables}."
+-                    }
++            scopes = query_scopes(expression)
++            tables = physical_tables(expression)
++            self._reject_identifier_collisions(valid_tables)
++            self._reject_identifier_collisions(authorized_tables)
++            for table in tables:
++                identity = ".".join(identifier_parts(table))
++                if authorized_tables is not None and not table_matches_allowed(
++                    table, authorized_tables, dialect=self.dialect,
++                ):
++                    role = username or "Active Role"
++                    message = f"SecurityViolationException: Table [{identity}] is unauthorized for role [{role}]."
+                     if raise_on_violation:
+-                        raise SecurityViolationException(violation_msg)
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[violation_msg])
+-
+-            # Phase 7: Schema Conformance Check (Against Database Tables)
+-            if valid_tables:
+-                valid_set = {t.lower() for t in valid_tables}
+-                unknown_tables = [tbl for tbl in actual_tables if tbl not in valid_set]
+-                if unknown_tables:
+-                    critique = {
+-                        "type": "SCHEMA_MISMATCH",
+-                        "message": f"Query references non-existent table(s): {unknown_tables}.",
+-                        "failed_sql": clean_sql,
+-                        "remediation": f"Reference only verified tables from the database schema: {valid_tables}."
+-                    }
+-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+-
+-            # Phase 8: Defensive T-SQL Safeguard (Automatic TOP 100 Injection)
+-            limit_injected = False
+-            has_limit = expression.find(exp.Limit) is not None
+-            has_offset = expression.find(exp.Offset) is not None
+-
+-            if not has_limit and not has_offset:
+-                expression = expression.limit(self.default_limit)
+-                limit_injected = True
+-                issues.append(f"Injected defensive TOP {self.default_limit} to safeguard against unindexed table explosion.")
+-
+-            sanitized_sql = expression.sql(dialect="tsql")
++                        raise SecurityViolationException(message)
++                    return self._deny(
++                        clean_sql, "RBAC_AUTHORIZATION_VIOLATION", message,
++                        f"Only query authorized relations from corporate scope: {authorized_tables}.",
++                    )
++                if valid_tables is not None and not table_matches_allowed(
++                    table, valid_tables, dialect=self.dialect,
++                ):
++                    return self._deny(
++                        clean_sql, "SCHEMA_MISMATCH",
++                        f"Query references non-existent relation [{identity}].",
++                        f"Reference only verified relations: {valid_tables}.",
++                    )
++                self._canonicalize_table(
++                    table, authorized_tables if authorized_tables is not None else valid_tables,
++                )
++
++            # An unrelated WHERE (including one inside a nested query) cannot
++            # authorize a CROSS JOIN or vacuous ON in any other SELECT scope.
++            for scope in scopes:
++                select = scope.expression
++                if not isinstance(select, exp.Select):
++                    continue
++                from_clause = select.args.get("from_") or select.args.get("from")
++                previous = set()
++                if from_clause is not None and from_clause.this is not None:
++                    previous.add(from_clause.this.alias_or_name.casefold())
++                for join in select.args.get("joins") or []:
++                    joined = join.this.alias_or_name.casefold()
++                    using = join.args.get("using")
++                    has_relationship = bool(using) or self._joins_scopes(join.args.get("on"), previous, joined)
++                    if join.kind.upper() == "CROSS" or not has_relationship:
++                        return self._deny(
++                            clean_sql, "AST_CARTESIAN_PRODUCT",
++                            f"Unintended Cartesian join detected on source {join.this}.",
++                            "Use an explicit non-vacuous ON relationship between joined sources, or USING columns.",
++                        )
++                    previous.add(joined)
++
++            # Inspect only the root limit. A nested TOP, OFFSET, TOP PERCENT,
++            # WITH TIES, parameter, or oversized TOP cannot defeat the row cap.
++            root_limit = expression.args.get("limit")
++            literal = (root_limit.expression or root_limit.args.get("count")) if root_limit is not None else None
++            safe_limit = False
++            if root_limit is not None and isinstance(literal, exp.Literal) and not literal.is_string:
++                try:
++                    count = int(literal.this)
++                    options = root_limit.args.get("limit_options")
++                    modifiers = bool(options and (options.args.get("percent") or options.args.get("with_ties")))
++                    safe_limit = 0 <= count <= self.default_limit and not modifiers
++                except (TypeError, ValueError):
++                    pass
++            limit_injected = not safe_limit
++            issues: List[str] = []
++            if limit_injected:
++                expression.set("limit", exp.Limit(expression=exp.Literal.number(self.default_limit)))
++                issues.append(f"Enforced defensive outer result limit of {self.default_limit} rows.")
++
+             return GuardianResult(
+-                is_valid=True,
+-                sanitized_sql=sanitized_sql,
+-                critique=None,
+-                issues=issues,
+-                limit_injected=limit_injected
+-            )
+-
++                True, expression.sql(dialect=self.dialect),
++                issues=issues, limit_injected=limit_injected,
++            )
+         except SecurityViolationException:
+             raise
+-        except ImportError:
+-            logger.info("sqlglot not available; applying fallback linter.")
+-            return self._fallback_audit(clean_sql, valid_tables, authorized_tables, username)
+-        except Exception as e:
+-            critique = {
+-                "type": "AST_SYNTAX_ERROR",
+-                "message": f"AST parser failed on T-SQL syntax: {str(e)}",
+-                "failed_sql": clean_sql,
+-                "remediation": "Correct T-SQL syntax errors, brackets, or unmatched parentheses."
+-            }
+-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
++        except ValidationError as error:
++            return self._deny(
++                clean_sql, error.code, error.message,
++                "Submit one read-only query using the verified, authorized schema; strict AST validation is required.",
++            )
++        except Exception as error:
++            logger.warning("AST validation failed closed: %s", error)
++            return self._deny(
++                clean_sql, "AST_PARSER_FAILURE", f"AST validation could not complete: {error}",
++                "Restore the required parser and correct SQL syntax before execution.",
++            )
+ 
+     def _fallback_audit(
+         self,
+         sql: str,
+         valid_tables: Optional[List[str]],
+         authorized_tables: Optional[List[str]],
+-        username: Optional[str]
++        username: Optional[str],
+     ) -> GuardianResult:
+-        """Heuristic fallback linter."""
+-        issues = []
+-        limit_injected = False
+-
+-        if not re.search(r"\bTOP\s+\d+", sql, re.IGNORECASE):
+-            sql = re.sub(r"^\s*SELECT\b", f"SELECT TOP {self.default_limit}", sql, count=1, flags=re.IGNORECASE)
+-            limit_injected = True
+-            issues.append(f"Injected defensive TOP {self.default_limit}.")
+-
+-        return GuardianResult(
+-            is_valid=True,
+-            sanitized_sql=sql,
+-            critique=None,
+-            issues=issues,
+-            limit_injected=limit_injected
++        """Retained legacy hook; fallback execution is expressly forbidden."""
++        return self._deny(
++            sql, "AST_PARSER_FAILURE", "Strict AST validation is unavailable; execution is prohibited.",
++            "Install and restore the required SQLGlot parser before executing queries.",
+         )
+diff --git a/agents/critic.py b/agents/critic.py
+--- a/agents/critic.py
++++ b/agents/critic.py
+@@ -1,17 +1,25 @@
+ """
+ Agent 4: Runtime Critic & Data Sanity Agent (The Evaluator)
+ Runs queries safely in timeout-guarded execution sandbox.
+-Diagnoses zero-result logic bugs, identifies domain numeric/date anomalies,
++Accepts legitimate empty results, identifies domain numeric/date anomalies,
+ and generates a formal executive analytical summary without informal emojis.
+ """
+ import logging
+ import time
+ from dataclasses import dataclass, field
+-from typing import Any, Dict, List, Optional
++from typing import Any, Dict, List, Optional, Tuple
+ 
+ import pandas as pd
+ 
+ from core.database import DatabaseEngine
++from core.sql_validation import (
++    ValidationError,
++    identifier_parts,
++    parse_single_query,
++    physical_tables,
++    query_scopes,
++    table_matches_allowed,
++)
+ 
+ logger = logging.getLogger("TextToSQL.Critic")
+ 
+@@ -35,12 +43,21 @@
+         self._col_cache: Dict[str, List[Dict[str, Any]]] = {}
+ 
+     def _get_cached_columns(self, table_name: str) -> List[Dict[str, Any]]:
+-        clean_tbl = table_name.strip("[]\"'").lower()
++        clean_tbl = table_name.casefold()
+         if clean_tbl not in self._col_cache:
+             try:
+-                self._col_cache[clean_tbl] = self.db.get_table_columns_info(table_name)
+-            except Exception:
+-                self._col_cache[clean_tbl] = []
++                columns = self.db.get_table_columns_info(table_name)
++            except Exception as error:
++                raise ValidationError(
++                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                    f"Verified metadata is unavailable for relation [{table_name}].",
++                ) from error
++            if not columns or any(not isinstance(c.get("name"), str) or not c["name"] for c in columns):
++                raise ValidationError(
++                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                    f"Verified column metadata is missing for relation [{table_name}].",
++                )
++            self._col_cache[clean_tbl] = columns
+         return self._col_cache[clean_tbl]
+ 
+     def validate_schema_grounding(
+@@ -49,76 +66,199 @@
+         authorized_tables: Optional[List[str]] = None,
+         user_session: Optional[Any] = None
+     ) -> Optional[Dict[str, Any]]:
+-        """
+-        Pre-execution AST verification:
+-        1. Ensures all referenced tables strictly belong to user_session.allowed_tables (RBAC).
+-        2. Detects hallucinated/fabricated columns not present in verified schema metadata.
++        """Bind relations and columns in their lexical query scopes before execution.
++
++        CTEs, derived outputs, projection aliases, and correlated subqueries are
++        resolved locally. A column existing in another relation or query scope
++        never establishes that the requested reference exists.
+         """
+         try:
+-            import sqlglot
+-            from sqlglot import exp
+-        except ImportError:
++            dialect = getattr(self.db, "dialect", "tsql")
++            if not isinstance(dialect, str):
++                dialect = "tsql"
++            dialect = dialect.casefold()
++            expression = parse_single_query(sql, dialect=dialect)
++            scopes = query_scopes(expression)
++            auth_tables = getattr(
++                user_session, "allowed_tables",
++                getattr(user_session, "authorized_tables", authorized_tables),
++            )
++            # Cache only within this audit: changed/revoked metadata must not be
++            # silently reused across a long-lived critic instance.
++            self._col_cache.clear()
++            for table in physical_tables(expression):
++                if auth_tables is not None and not table_matches_allowed(table, auth_tables, dialect):
++                    raise ValidationError(
++                        "HALLUCINATION_UNAUTHORIZED_TABLE",
++                        f"Hallucination / RBAC Isolation: Relation [{table.sql(dialect=dialect)}] is unauthorized for the active role.",
++                    )
++            self._validate_scoped_columns(scopes, dialect)
+             return None
+-
+-        try:
+-            expression = sqlglot.parse_one(sql, read="tsql")
+-        except Exception:
+-            return None
+-
+-        # 1. Extract CTE names to avoid mistaking CTE aliases for base tables
+-        cte_names = set()
+-        with_node = expression.find(exp.With)
+-        if with_node:
+-            for cte in with_node.expressions:
+-                if hasattr(cte, "alias") and cte.alias:
+-                    cte_names.add(cte.alias.lower())
+-
+-        # 2. Extract referenced base tables
+-        referenced_tables = [
+-            t.name for t in expression.find_all(exp.Table)
+-            if t.name and t.name.lower() not in cte_names
+-        ]
+-
+-        # 3. Check Table Authorization Whitelist (RBAC Isolation)
+-        auth_tables = getattr(user_session, "allowed_tables", getattr(user_session, "authorized_tables", authorized_tables))
+-        if auth_tables is not None:
+-            auth_set = {t.strip("[]\"'").lower() for t in auth_tables}
+-            for tbl in referenced_tables:
+-                if tbl.strip("[]\"'").lower() not in auth_set:
+-                    role_str = getattr(user_session, "username", getattr(user_session, "role_title", "Active Role"))
+-                    return {
+-                        "type": "HALLUCINATION_UNAUTHORIZED_TABLE",
+-                        "message": f"Hallucination / RBAC Isolation: Table [{tbl}] is unauthorized for role [{role_str}]. Allowed tables: {list(auth_tables)}",
+-                        "failed_sql": sql,
+-                        "remediation": f"Remove [{tbl}]. Only reference authorized tables from scope: {list(auth_tables)}."
+-                    }
+-
+-        # 4. Check for Fabricated / Non-Existent Columns
+-        valid_columns = set()
+-        for tbl in referenced_tables:
+-            clean_t = tbl.strip("[]\"'")
+-            cols = self._get_cached_columns(clean_t)
+-            for c in cols:
+-                valid_columns.add(c["name"].lower())
+-
+-        # Collect query-defined aliases and standard keywords/wildcards
+-        query_aliases = {alias.alias.lower() for alias in expression.find_all(exp.Alias) if alias.alias}
+-        query_aliases.add("*")
+-        builtins = {"1", "0", "null", "getdate", "sysdatetime", "newid", "row_number"}
+-
+-        for col_node in expression.find_all(exp.Column):
+-            if col_node.name and col_node.name != "*":
+-                col_name = col_node.name.strip("[]\"'").lower()
+-                if valid_columns:
+-                    if col_name not in valid_columns and col_name not in query_aliases and col_name not in cte_names and col_name not in builtins:
+-                        return {
+-                            "type": "HALLUCINATION_INVALID_COLUMN",
+-                            "message": f"Hallucination Detected: Fabricated column [{col_node.name}] does not exist in schema of {referenced_tables}.",
+-                            "failed_sql": sql,
+-                            "remediation": f"Column [{col_node.name}] is invalid. Select from valid verified schema columns: {sorted(list(valid_columns))}."
+-                        }
+-
+-        return None
++        except ValidationError as error:
++            return {
++                "type": error.code,
++                "message": error.message,
++                "failed_sql": sql,
++                "remediation": "Use only authorized relations and columns from verified metadata in the current query scope. Validation must succeed before execution.",
++            }
++        except Exception as error:
++            # Broken parser/metadata/scope machinery is not a proof of safety.
++            logger.warning("Schema grounding failed closed: %s", error)
++            return {
++                "type": "AST_PARSER_FAILURE",
++                "message": "Strict AST schema grounding could not be completed.",
++                "failed_sql": sql,
++                "remediation": "Restore the AST validator and verified schema metadata before executing this query.",
++            }
++
++    def _validate_scoped_columns(self, scopes: List[Any], dialect: str) -> None:
++        """Validate column ownership and expose only proven derived outputs."""
++        from sqlglot import exp
++        from sqlglot.optimizer.scope import Scope
++
++        source_cache: Dict[int, Dict[str, Tuple[Any, List[str]]]] = {}
++        output_cache: Dict[int, List[str]] = {}
++        resolving = set()
++
++        def invalid(message: str) -> None:
++            raise ValidationError("HALLUCINATION_INVALID_COLUMN", message)
++
++        def source_columns(scope: Any) -> Dict[str, Tuple[Any, List[str]]]:
++            key = id(scope)
++            if key in source_cache:
++                return source_cache[key]
++            sources = {}
++            for alias, (_, source) in scope.selected_sources.items():
++                normalized = alias.casefold()
++                if normalized in sources:
++                    invalid(f"Relation alias [{alias}] is ambiguous in this query scope.")
++                if isinstance(source, exp.Table):
++                    relation = exp.Table(this=source.this.copy())
++                    for part in ("db", "catalog"):
++                        if source.args.get(part) is not None:
++                            relation.set(part, source.args[part].copy())
++                    name = relation.sql(dialect=dialect) if len(identifier_parts(source)) > 1 else source.name
++                    metadata = self._get_cached_columns(name)
++                    for column in metadata:
++                        # Real adapters return identity fields. Legacy test
++                        # adapters may provide only the public column contract.
++                        for field, expected in (("table_schema", source.db), ("table_catalog", source.catalog)):
++                            if expected and column.get(field) and str(column[field]).casefold() != expected.casefold():
++                                raise ValidationError(
++                                    "HALLUCINATION_SCHEMA_UNAVAILABLE",
++                                    f"Metadata identity does not match relation [{name}].",
++                                )
++                    names = [column["name"].casefold() for column in metadata]
++                elif isinstance(source, Scope):
++                    names = scope_outputs(source)
++                    if not names or any(not name for name in names):
++                        invalid(f"Derived relation [{alias}] has an unnamed or unresolved output.")
++                    if len(names) != len(set(names)):
++                        invalid(f"Derived relation [{alias}] has duplicate output column names.")
++                else:
++                    raise ValidationError("AST_UNSUPPORTED_SOURCE", "Unresolved relation source.")
++                sources[normalized] = (source, names)
++            source_cache[key] = sources
++            return sources
++
++        def column_owner(column: Any) -> Any:
++            parent = column.parent
++            while parent is not None and not isinstance(parent, (exp.Select, exp.SetOperation)):
++                parent = parent.parent
++            return parent
++
++        def resolve(column: Any, scope: Any) -> None:
++            sources = source_columns(scope)
++            name = column.name.casefold()
++            qualifier = column.table.casefold()
++            if qualifier:
++                if qualifier in sources:
++                    source, names = sources[qualifier]
++                    if column.db or column.catalog:
++                        if not isinstance(source, exp.Table):
++                            invalid(f"Derived alias [{column.table}] cannot be schema-qualified.")
++                        if source.alias:
++                            invalid(f"Relation alias [{column.table}] cannot be schema-qualified.")
++                        source_schema = source.db or ("dbo" if dialect == "tsql" else "")
++                        if column.db and column.db.casefold() != source_schema.casefold():
++                            invalid(f"Schema qualifier for [{column.sql()}] does not match its relation.")
++                        if column.catalog and column.catalog.casefold() != source.catalog.casefold():
++                            invalid(f"Catalog qualifier for [{column.sql()}] does not match its relation.")
++                    if name != "*" and names.count(name) != 1:
++                        invalid(f"Column [{column.sql()}] is absent or ambiguous in relation [{column.table}].")
++                    return
++                # A local alias shadows the same alias in all enclosing scopes;
++                # only entirely absent qualifiers may correlate outward.
++            else:
++                count = sum(names.count(name) for _, names in sources.values())
++                if count == 1:
++                    return
++                if count > 1:
++                    invalid(f"Unqualified column [{column.name}] is ambiguous in this query scope.")
++            if scope.can_be_correlated and scope.parent is not None:
++                resolve(column, scope.parent)
++                return
++            invalid(f"Column [{column.sql()}] cannot be resolved in this query scope.")
++
++        def scope_outputs(scope: Any) -> List[str]:
++            key = id(scope)
++            if key in output_cache:
++                return output_cache[key]
++            if key in resolving:
++                invalid("Recursive query outputs require an explicit schema policy.")
++            resolving.add(key)
++            try:
++                if isinstance(scope.expression, exp.Union):
++                    branch_scopes = getattr(scope, "set_operation_scopes", None)
++                    if branch_scopes is None:
++                        branch_scopes = getattr(scope, "union_scopes", [])
++                    branches = [scope_outputs(branch) for branch in branch_scopes]
++                    if not branches or any(len(branch) != len(branches[0]) for branch in branches):
++                        invalid("UNION branches have incompatible output columns.")
++                    names = list(branches[0])
++                else:
++                    names = []
++                    sources = source_columns(scope)
++                    for projection in scope.expression.selects:
++                        if isinstance(projection, exp.Star):
++                            if not sources:
++                                invalid("SELECT * requires a verified relation source.")
++                            for _, columns in sources.values():
++                                names.extend(columns)
++                        elif isinstance(projection, exp.Column) and projection.is_star:
++                            resolve(projection, scope)
++                            qualifier = projection.table.casefold()
++                            if qualifier not in sources:
++                                invalid("A projection wildcard must reference a local relation.")
++                            names.extend(sources[qualifier][1])
++                        else:
++                            names.append(projection.alias_or_name.casefold())
++                if scope.outer_columns:
++                    if len(scope.outer_columns) != len(names):
++                        invalid("Declared CTE/derived column aliases do not match its output width.")
++                    names = [name.casefold() for name in scope.outer_columns]
++                output_cache[key] = names
++                return names
++            finally:
++                resolving.remove(key)
++
++        for scope in scopes:
++            source_columns(scope)  # Includes metadata validation for COUNT(*).
++            outputs = scope_outputs(scope)
++            for column in scope.expression.find_all(exp.Column):
++                if column_owner(column) is not scope.expression:
++                    continue
++                # SQL Server exposes output aliases only as standalone ORDER
++                # BY terms. WHERE/JOIN/other projections cannot borrow them.
++                ordered = column.parent
++                if (
++                    not column.table and isinstance(ordered, exp.Ordered)
++                    and ordered.this is column and isinstance(ordered.parent, exp.Order)
++                    and ordered.parent.parent is scope.expression
++                    and outputs.count(column.name.casefold()) == 1
++                ):
++                    continue
++                resolve(column, scope)
+ 
+     def evaluate(
+         self,
+@@ -184,27 +324,16 @@
+         elapsed_ms = (time.perf_counter() - start_t) * 1000
+         sanity_warnings: List[str] = []
+ 
+-        # Step 2: Zero-Result Diagnosis
++        # Step 2: An empty result is a valid answer, not permission to loosen
++        # the requested conditions or row-level security predicates.
+         if df.empty or len(df) == 0:
+-            if iteration < max_iterations:
+-                critique = {
+-                    "type": "ZERO_RESULTS_RETURNED",
+-                    "message": "Query executed successfully without database errors, but returned 0 records.",
+-                    "failed_sql": sql,
+-                    "remediation": (
+-                        "Zero rows returned. Likely causes: (1) exact '=' equality check on strings "
+-                        "instead of LIKE/ILIKE, (2) overly restrictive AND conditions, (3) INNER JOIN "
+-                        "filtering out rows that LEFT JOIN would preserve. Relax filters or use LIKE '%...%'."
+-                    )
+-                }
+-                return EvaluationResult(
+-                    success=False,
+-                    df=df,
+-                    execution_time_ms=elapsed_ms,
+-                    critique=critique
+-                )
+-            else:
+-                sanity_warnings.append("Notice: Result set is empty after retries.")
++            return EvaluationResult(
++                success=True,
++                df=df,
++                execution_time_ms=elapsed_ms,
++                critique=None,
++                executive_narrative=self._synthesize_narrative(question, df, elapsed_ms, []),
++            )
+ 
+         # Step 3: Domain Sanity Checks
+         for col in df.columns:
+diff --git a/agents/orchestrator.py b/agents/orchestrator.py
+--- a/agents/orchestrator.py
++++ b/agents/orchestrator.py
+@@ -22,6 +22,16 @@
+ from core.vanna_client import VannaTextToSQLEngine
+ 
+ logger = logging.getLogger("TextToSQL.Orchestrator")
++
++# Regeneration can repair a known-catalog typo, but cannot repair an unavailable
++# authorization boundary or convert a permission violation into permission.
++TERMINAL_CRITIQUE_TYPES = frozenset({
++    "AST_PARSER_FAILURE", "AST_SCOPE_FAILURE", "AST_UNSUPPORTED_SOURCE", "AST_UNSUPPORTED_FUNCTION",
++    "AST_IDENTIFIER_COLLISION",
++    "AST_SECURITY_VIOLATION", "SQL_INJECTION_QUARANTINE", "INVALID_QUERY_ROOT",
++    "RBAC_AUTHORIZATION_VIOLATION", "HALLUCINATION_UNAUTHORIZED_TABLE",
++    "HALLUCINATION_SCHEMA_UNAVAILABLE", "EXECUTION_TIMEOUT",
++})
+ 
+ 
+ @dataclass
+@@ -95,9 +105,6 @@
+         events: List[AgentEvent] = []
+         retry_history: List[RetryRecord] = []
+ 
+-        authorized_tables = user_session.authorized_tables if user_session else None
+-        username = user_session.username if user_session else "system"
+-
+         # STAGE 0: Intent Routing & Operational Boundaries Check
+         intent_res = self.classify_intent(question, user_session=user_session)
+         if intent_res.intent == IntentType.CAPABILITY_HELP:
+@@ -127,6 +134,30 @@
+             events.append(ev)
+             if on_event:
+                 on_event(ev)
++
++        # HELP remains available without a session; querying never inherits an
++        # unrestricted implicit system identity from an omitted principal.
++        if not isinstance(user_session, UserSession) or not user_session.username.strip():
++            message = "AUTHENTICATION_REQUIRED: An authenticated user session is required for data queries."
++            _log_event("Authorization", "failed", message, details={"type": "AUTHENTICATION_REQUIRED"})
++            return OrchestrationResult(
++                success=False, final_sql="", df=pd.DataFrame(), executive_narrative="",
++                events=events, retry_history=retry_history, error_message=message,
++                execution_time_ms=(time.perf_counter() - start_time) * 1000,
++            )
++        authorized_tables = list(user_session.allowed_tables)
++        username = user_session.username
++
++        def _terminal_failure(agent: str, sql: str, denial: Dict[str, Any]) -> OrchestrationResult:
++            code = denial.get("type", "VALIDATION_FAILURE")
++            message = f"{code}: {denial.get('message', 'Validation failed.')}"
++            _log_event(agent, "failed", message, details={"critique": denial})
++            return OrchestrationResult(
++                success=False, final_sql=sql, df=pd.DataFrame(), executive_narrative="",
++                events=events, retry_history=retry_history, schema_card=schema_card,
++                execution_time_ms=(time.perf_counter() - start_time) * 1000,
++                error_message=message,
++            )
+ 
+         # STAGE 1: Schema & Data Reconnaissance (The Explorer)
+         _log_event("Explorer", "running", f"Pruning DDLs within authorized scope for user '{username}'...")
+@@ -224,13 +255,17 @@
+             )
+ 
+             if not guardian_result.is_valid:
++                critique = dict(guardian_result.critique or {
++                    "type": "AST_PARSER_FAILURE", "message": "Guardian returned no validation verdict."
++                })
++                critique["agent"] = "Guardian"
++                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
++                    return _terminal_failure("Guardian", current_sql, critique)
+                 _log_event(
+                     "Guardian", "retry",
+-                    f"AST Policy Violation: {guardian_result.critique.get('message')}",
+-                    details={"critique": guardian_result.critique}
++                    f"AST Policy Violation: {critique.get('message')}",
++                    details={"critique": critique}
+                 )
+-                critique = guardian_result.critique
+-                critique["agent"] = "Guardian"
+                 iteration += 1
+                 continue
+ 
+@@ -254,13 +289,17 @@
+             )
+ 
+             if not eval_result.success:
++                critique = dict(eval_result.critique or {
++                    "type": "AST_PARSER_FAILURE", "message": "Evaluator returned no validation verdict."
++                })
++                critique["agent"] = "Evaluator"
++                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
++                    return _terminal_failure("Evaluator", sanitized_sql, critique)
+                 _log_event(
+                     "Evaluator", "retry",
+-                    f"Evaluator triggered diagnostic retry: {eval_result.critique.get('message')}",
+-                    details={"critique": eval_result.critique}
++                    f"Evaluator triggered diagnostic retry: {critique.get('message')}",
++                    details={"critique": critique}
+                 )
+-                critique = eval_result.critique
+-                critique["agent"] = "Evaluator"
+                 iteration += 1
+                 continue
+ 
+@@ -290,7 +329,7 @@
+             success=False,
+             final_sql=sanitized_sql or current_sql,
+             df=pd.DataFrame(),
+-            executive_narrative="Unable to synthesize a verified, non-empty T-SQL query within retry limits.",
++            executive_narrative="Unable to synthesize a verified T-SQL query within retry limits.",
+             events=events,
+             retry_history=retry_history,
+             schema_card=schema_card,

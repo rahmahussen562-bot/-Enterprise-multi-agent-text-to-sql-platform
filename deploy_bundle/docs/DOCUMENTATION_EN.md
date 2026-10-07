@@ -118,7 +118,7 @@ SentinelSQL enforces strict Table-Level RBAC privilege isolation. Access control
 | Metric / Dimension | `sales_analyst` Role | `inventory_lead` Role |
 | :--- | :--- | :--- |
 | **Corporate Identity** | Commercial Intelligence Lead | Catalog Operations Lead |
-| **Evaluation Credentials** | `sales_analyst` / `Sales@2026!` | `inventory_lead` / `Ops@2026!` |
+| **Account Provisioning** | Private server account assigned `sales_analyst`; password set with `tools/bootstrap_api.py` | Private server account assigned `inventory_lead`; password set with `tools/bootstrap_api.py` |
 | **Permitted Tables Whitelist** | `Customer`, `Invoice`, `InvoiceLine` | `Track`, `Album`, `Artist`, `Genre`, `MediaType` |
 | **Prohibited Tables** | All Catalog & Track tables | All Invoicing & Customer tables |
 | **Financial Authority** | Full access to Revenue, Fees, Profit | Restricted: No billing data access |

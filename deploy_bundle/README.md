@@ -2,6 +2,15 @@
 
 This repository bundle contains the standalone, production-hardened source code for deploying the Enterprise Multi-Agent Text-to-SQL Platform with Microsoft SQL Server (T-SQL) integration, Role-Based Access Control (RBAC), and AST-based SQL Injection quarantine firewall.
 
+Phase 2 provides a decoupled FastAPI service. Follow [api/README.md](api/README.md) for private account provisioning, D-drive startup, REST contracts, and WebSocket streaming. The verified runtime is the self-contained D-drive environment; use its installer rather than the historical generic commands below.
+
+Phase 4 adds FinCore Enterprise on PostgreSQL 17+: asynchronous Psycopg pooling
+and cancellation, a balanced immutable ledger, native branch/case RLS, masked
+views, and registry-controlled financial metrics. The original two roles retain
+the legacy engine. See [FinCore schema and operating guide](docs/FINCORE_SCHEMA.md)
+for migration and private principal provisioning. The React workspace at
+`D:\BIRD-Interact\frontend` supports all five server-governed personas.
+
 ---
 
 ## 1. Directory Structure
@@ -111,9 +120,18 @@ streamlit run app.py --server.port 8502 --server.headless true
 
 ## 6. Access Control & Security Personas
 
-| Role ID | Username | Password | Authorized Table Scope |
-| :--- | :--- | :--- | :--- |
-| **Commercial Sales** | `sales_analyst` | `Sales@2026!` | `Customer`, `Invoice`, `InvoiceLine` |
-| **Catalog & Operations** | `inventory_lead` | `Ops@2026!` | `Track`, `Album`, `Artist`, `Genre`, `MediaType` |
+| Role ID | Account Provisioning | Authorized Table Scope |
+| :--- | :--- | :--- |
+| **Commercial Sales** | Private account assigned `sales_analyst` by the server | `Customer`, `Invoice`, `InvoiceLine` |
+| **Catalog & Operations** | Private account assigned `inventory_lead` by the server | `Track`, `Album`, `Artist`, `Genre`, `MediaType` |
+
+Run `tools/bootstrap_api.py` in the D-drive virtual environment to choose credentials. Only salted password hashes are stored. There are no published or built-in demo passwords.
 
 All cross-boundary queries are blocked deterministically by the AST Guardian Firewall before database runtime.
+
+
+## Phase 5/6 production package
+
+The decoupled API and React portal now have a parameterized Cloudflare deployment package. See [the deployment runbook](docs/CLOUDFLARE_DEPLOYMENT.md) for private `.internal` routing, public-zone alternatives, Docker/TLS/secret provisioning, Pages builds and CI/CD. The root workflow is `../.github/workflows/deploy.yml`; build contexts are `deploy_bundle/` and `frontend/`.
+
+Verification: 326 backend tests, 20 frontend tests and 14 edge/header tests passed, with zero npm vulnerabilities. [Execution report](docs/PHASE56_EXECUTION_REPORT.md). Docker/live Cloudflare deployment remains pending a provisioned engine, runner and protected credentials.

@@ -125,7 +125,12 @@ class VannaTextToSQLEngine:
         self.config = get_config()
         self.llm_cfg = llm_config or self.config.llm
         self.vec_cfg = vector_config or self.config.vector
-        self.local_store = LocalSemanticStore()
+        # Explicit engine configurations must isolate deterministic memory as
+        # well as Chroma. Preserve the legacy location for unconfigured callers.
+        self.local_store = LocalSemanticStore(
+            str(Path(self.vec_cfg.persist_directory) / "local")
+            if vector_config is not None else "data/semantic_store"
+        )
         self.vn = None
         self._init_vanna()
 

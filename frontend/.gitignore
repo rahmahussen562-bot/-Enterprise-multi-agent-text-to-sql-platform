@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.runtime/
+.env.local
+test-results/
+playwright-report/
+
+.env
+.env.*
+!.env.production.example

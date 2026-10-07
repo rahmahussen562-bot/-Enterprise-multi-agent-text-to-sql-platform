@@ -1,0 +1,12 @@
+{
+  "simulator": true,
+  "rtl": true,
+  "mobileOverflow": false,
+  "serverRoleIsolation": true,
+  "websocket": true,
+  "exports": true,
+  "memoryOnlySession": true,
+  "workspaceMobileOverflow": false,
+  "rest": true,
+  "browserErrors": []
+}

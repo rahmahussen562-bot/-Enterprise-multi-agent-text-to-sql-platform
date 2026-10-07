@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="prevalidates an API-compatible HS256 token" time="0.139107" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rejects tampered signatures, expired tokens and algorithm substitution" time="0.005243" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rejects extra claims, duplicate claims and invalid lifetime" time="0.007383" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rejects missing sessions before contacting origin" time="0.235496" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="denies hostile origins and URL credentials" time="0.020296" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rate limits authentication independently and fails closed without a binding" time="0.004354" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="forwards only server-owned Access credentials and disables caching" time="0.008014" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="WebSocket first-frame authentication remains at origin and upgrade is untouched" time="0.002127" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rejects insecure origins, routing loops and redirects" time="0.007407" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="CORS preflight validates route, method and headers" time="0.002598" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="links client abort to the forwarded request" time="0.016013" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="rejects unknown routes and oversized requests" time="0.023160" classname="test" file="D:\BIRD-Interact\deploy_bundle\edge\gateway.test.mjs"/>
+	<testcase name="CSP permits only the configured connections" time="0.005710" classname="test" file="D:\BIRD-Interact\frontend\tools\pages-security.test.mjs"/>
+	<testcase name="deployment fails without endpoints or with secrets in URLs" time="0.001745" classname="test" file="D:\BIRD-Interact\frontend\tools\pages-security.test.mjs"/>
+	<!-- tests 14 -->
+	<!-- suites 0 -->
+	<!-- pass 14 -->
+	<!-- fail 0 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 1035.9791 -->
+</testsuites>

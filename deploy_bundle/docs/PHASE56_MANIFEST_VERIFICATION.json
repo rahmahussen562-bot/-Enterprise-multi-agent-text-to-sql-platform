@@ -1,0 +1,10 @@
+{
+  "yaml_and_toml": "passed",
+  "private_ports": "passed",
+  "secret_file_mounts": "passed",
+  "release_gate_dependencies": "passed",
+  "pages_project": "sentinelsql-portal",
+  "container_build": "not assessed by this static validator; run the container CI gate",
+  "live_cloudflare_deployment": "not assessed by this static validator; run the live ingress/release gate",
+  "private_ingress": "requires trusted institutional certificate and WARP hostname routing"
+}

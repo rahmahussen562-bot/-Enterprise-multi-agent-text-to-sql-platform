@@ -1,0 +1,71 @@
+{
+  "timestamp": "2026-10-07T08:46:41.696104+00:00",
+  "backend": {
+    "total": 326,
+    "failed": 0,
+    "skipped": 0
+  },
+  "frontend": {
+    "total": 20,
+    "failed": 0,
+    "skipped": 0
+  },
+  "edge_and_headers": {
+    "total": 14,
+    "failed": 0,
+    "skipped": 0
+  },
+  "retained_baseline": {
+    "backend": 320,
+    "frontend": 10
+  },
+  "new_tests": {
+    "backend": 6,
+    "frontend": 10,
+    "edge_and_headers": 14
+  },
+  "npm_vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "pip_check": "passed",
+  "ruff_critical_rules": "passed",
+  "api_contract_drift": "passed",
+  "zero_emoji_frontend": "passed",
+  "production_frontend_build": "passed",
+  "storage_root": "D:\\BIRD-Interact",
+  "disk_free_gib": 108.52,
+  "historical_test_sha256": {
+    "test_auth.py": "446cca0f976fbdfa22e20f9ecd3d53b4bfc398cd391b77d236427310c021fa86",
+    "test_critic.py": "d464f5f517da48de58e3b4c9ba3b0d6cc2aa23683202291056cb203bc6fce7af",
+    "test_database.py": "c02ff205518ff0ebd27e5eb4d123f80ad1fd6f83b6f2c349e10b2164abea4a07",
+    "test_guardian.py": "0819134d0d1b2f9fdc9f88058ef95b62b122c0b732c840ad8ae96ba194bdc21c",
+    "test_intent_router.py": "3507190b2b301625d32c53749bc9473ff7b19cbdb3561abca433bb64a617e1c1",
+    "test_orchestrator.py": "6b16657e3dee057edb755e83f9480c4135dcfd2b499e329da7b3b1874a1623e3",
+    "test_reconnaissance.py": "90af7ab82828b462d9f92bf380f74e597e9ef9e13506407bf21e3d6c1ae3b4f9",
+    "test_visualizer.py": "9ea5d726b8818e7c61fa711b416e3551bbfcd1419133fda87164f069dc3025da"
+  },
+  "historical_test_hashes_unchanged": true,
+  "validation_tool_versions": {
+    "PyYAML": "6.0.3",
+    "cryptography": "49.0.0",
+    "ruff": "0.16.10"
+  },
+  "container_build_and_live_stack": "not run: Docker is not installed; mandatory CI gate provided",
+  "cloudflare_deployment": "not run: no account tokens or production runner available",
+  "api_hostname": "api.sentinelsql.internal requires WARP/private DNS and trusted TLS",
+  "manifest_verification": {
+    "yaml_and_toml": "passed",
+    "private_ports": "passed",
+    "secret_file_mounts": "passed",
+    "release_gate_dependencies": "passed",
+    "pages_project": "sentinelsql-portal",
+    "container_build": "not assessed by this static validator; run the container CI gate",
+    "live_cloudflare_deployment": "not assessed by this static validator; run the live ingress/release gate",
+    "private_ingress": "requires trusted institutional certificate and WARP hostname routing"
+  }
+}

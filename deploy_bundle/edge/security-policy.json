@@ -1,0 +1,14 @@
+{
+  "mode": "operator-applied public Cloudflare zone policy",
+  "scope": "hostname equals configured public API hostname",
+  "managed_waf": ["Cloudflare Managed Ruleset", "OWASP Core Ruleset when available"],
+  "cache_rule": {"expression": "starts_with(http.request.uri.path, \"/api/v1/\")", "action": "bypass"},
+  "custom_rules": [
+    {"description": "Permit only API paths", "expression": "not starts_with(http.request.uri.path, \"/api/v1/\")", "action": "block"},
+    {"description": "Reject unexpected verbs", "expression": "not http.request.method in {\"GET\" \"POST\" \"OPTIONS\"}", "action": "block"}
+  ],
+  "origin_access": "For Worker topology, require a Cloudflare Access service token at the origin hostname to prevent gateway bypass.",
+  "tls": "Full (strict); minimum TLS 1.2; SSL termination at Cloudflare for public hostnames",
+  "private_network": "Private .internal routes require WARP, device access policy, private DNS and a separately trusted HTTPS ingress. Public-zone WAF rules do not secure arbitrary private routes.",
+  "rate_limits": "Worker bindings are per Cloudflare location and eventually consistent; database/API admission limits remain authoritative."
+}

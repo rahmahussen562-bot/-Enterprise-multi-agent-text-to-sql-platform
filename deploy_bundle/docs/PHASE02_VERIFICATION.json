@@ -1,0 +1,60 @@
+{
+  "environment": "D:\\BIRD-Interact\\deploy_bundle\\.venv",
+  "python": "3.14.3",
+  "baseline_tests_retained": 207,
+  "original_test_modules_unchanged": {
+    "tests/test_auth.py": true,
+    "tests/test_critic.py": true,
+    "tests/test_database.py": true,
+    "tests/test_guardian.py": true,
+    "tests/test_intent_router.py": true,
+    "tests/test_orchestrator.py": true,
+    "tests/test_reconnaissance.py": true,
+    "tests/test_visualizer.py": true
+  },
+  "total_tests": 248,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "api_tests": 41,
+  "elapsed_seconds": 167.189,
+  "test_families": {
+    "test_api": 41,
+    "TestCorporateAuth": 6,
+    "TestCriticSchemaGrounding": 3,
+    "test_critic_adversarial": 79,
+    "TestDatabaseEngine": 12,
+    "test_database_cancellation": 31,
+    "TestASTGuardianAgent": 10,
+    "test_guardian_adversarial": 42,
+    "TestIntentRouter": 6,
+    "TestCentralController": 2,
+    "test_orchestrator_security": 11,
+    "TestReconnaissanceAgent": 2,
+    "TestAutonomousVisualizer": 3
+  },
+  "dependency_check": "No broken requirements found.",
+  "d_free_bytes": 118221393920,
+  "directory_bytes": {
+    ".venv": 364502841,
+    ".runtime": 608146863
+  },
+  "openapi_paths": [
+    "/api/v1/auth/login",
+    "/api/v1/query/classify",
+    "/api/v1/query/execute",
+    "/api/v1/query/jobs/{job_id}",
+    "/api/v1/query/jobs/{job_id}/cancel",
+    "/api/v1/telemetry/audit-logs"
+  ],
+  "verification_boundary": "Actual SQLite plus controlled provider/native ODBC doubles; no live SQL Server deployment.",
+  "live_uvicorn_smoke": {
+    "openapi_status": 200,
+    "classification": "DATA_QUERY",
+    "execute_status": 200,
+    "row_count": 5,
+    "websocket_frames_ordered": true,
+    "websocket_row_count": 5,
+    "shutdown_exit_code": 0
+  }
+}

@@ -260,7 +260,7 @@ if st.session_state.user is None:
 
         with st.form("login_form"):
             username = st.text_input("Corporate ID / Username", value="sales_analyst")
-            password = st.text_input("Password", type="password", value="Sales@2026!")
+            password = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Authenticate Session", use_container_width=True)
 
             if submitted:
@@ -276,8 +276,8 @@ if st.session_state.user is None:
         st.markdown("""
         <div style="font-size: 0.8rem; color: #94a3b8; line-height: 1.6;">
             <strong>Directory Credentials for Evaluation:</strong><br>
-            - <code>sales_analyst</code> / <code>Sales@2026!</code> (Commercial Scope: Customer, Invoice, InvoiceLine)<br>
-            - <code>inventory_lead</code> / <code>Ops@2026!</code> (Catalog Scope: Track, Album, Artist, Genre, MediaType)
+            Use your provisioned corporate account. Role permissions are assigned by the server.<br>
+            Local accounts are provisioned with <code>tools/bootstrap_api.py</code>.
         </div>
         """, unsafe_allow_html=True)
 

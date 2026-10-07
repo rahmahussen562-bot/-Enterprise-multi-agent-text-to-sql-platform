@@ -1,0 +1,9 @@
+{
+  "openapi_status": 200,
+  "classification": "DATA_QUERY",
+  "execute_status": 200,
+  "row_count": 5,
+  "websocket_frames_ordered": true,
+  "websocket_row_count": 5,
+  "shutdown_exit_code": 0
+}

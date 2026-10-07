@@ -19,9 +19,21 @@ from agents.reconnaissance import ReconnaissanceAgent, SchemaCard
 from core.auth import UserSession
 from core.config import AgentConfig, SystemConfig, get_config
 from core.database import DatabaseEngine
+from core.cancellation import QueryCancelledError, check_cancelled
 from core.vanna_client import VannaTextToSQLEngine
 
 logger = logging.getLogger("TextToSQL.Orchestrator")
+
+# Regeneration can repair a known-catalog typo, but cannot repair an unavailable
+# authorization boundary or convert a permission violation into permission.
+TERMINAL_CRITIQUE_TYPES = frozenset({
+    "AST_PARSER_FAILURE", "AST_SCOPE_FAILURE", "AST_UNSUPPORTED_SOURCE", "AST_UNSUPPORTED_FUNCTION",
+    "AST_IDENTIFIER_COLLISION",
+    "AST_SECURITY_VIOLATION", "SQL_INJECTION_QUARANTINE", "INVALID_QUERY_ROOT",
+    "RBAC_AUTHORIZATION_VIOLATION", "HALLUCINATION_UNAUTHORIZED_TABLE",
+    "HALLUCINATION_SCHEMA_UNAVAILABLE", "EXECUTION_TIMEOUT",
+    "COLUMN_AUTHORIZATION_VIOLATION",
+})
 
 
 @dataclass
@@ -72,8 +84,9 @@ class CentralController:
         self.vanna = vanna_engine or VannaTextToSQLEngine(self.config.llm, self.config.vector)
 
         self.explorer = ReconnaissanceAgent(self.db, self.vanna)
-        self.coder = SQLCoderAgent(self.config.llm, dialect="tsql")
-        self.guardian = ASTGuardianAgent(default_limit=self.config.agent.defensive_limit, dialect="tsql")
+        dialect = getattr(self.db, "dialect", "tsql")
+        self.coder = SQLCoderAgent(self.config.llm, dialect=dialect)
+        self.guardian = ASTGuardianAgent(default_limit=self.config.agent.defensive_limit, dialect=dialect)
         self.critic = RuntimeCriticAgent(self.db, timeout_sec=self.config.db.query_timeout_sec)
         self.intent_router = IntentRouter()
 
@@ -92,11 +105,10 @@ class CentralController:
         Intent Check -> Explorer -> Coder -> Guardian -> Evaluator under active user's authorized scope.
         """
         start_time = time.perf_counter()
+        dialect_label = "PostgreSQL" if getattr(self.db, "dialect", "tsql") == "postgres" else "T-SQL"
+        check_cancelled()
         events: List[AgentEvent] = []
         retry_history: List[RetryRecord] = []
-
-        authorized_tables = user_session.authorized_tables if user_session else None
-        username = user_session.username if user_session else "system"
 
         # STAGE 0: Intent Routing & Operational Boundaries Check
         intent_res = self.classify_intent(question, user_session=user_session)
@@ -123,10 +135,35 @@ class CentralController:
             )
 
         def _log_event(agent: str, status: str, msg: str, details: Optional[Dict[str, Any]] = None):
+            check_cancelled()
             ev = AgentEvent(agent_name=agent, status=status, message=msg, details=details)
             events.append(ev)
             if on_event:
                 on_event(ev)
+
+        # HELP remains available without a session; querying never inherits an
+        # unrestricted implicit system identity from an omitted principal.
+        if not isinstance(user_session, UserSession) or not user_session.username.strip():
+            message = "AUTHENTICATION_REQUIRED: An authenticated user session is required for data queries."
+            _log_event("Authorization", "failed", message, details={"type": "AUTHENTICATION_REQUIRED"})
+            return OrchestrationResult(
+                success=False, final_sql="", df=pd.DataFrame(), executive_narrative="",
+                events=events, retry_history=retry_history, error_message=message,
+                execution_time_ms=(time.perf_counter() - start_time) * 1000,
+            )
+        authorized_tables = list(user_session.allowed_tables)
+        username = user_session.username
+
+        def _terminal_failure(agent: str, sql: str, denial: Dict[str, Any]) -> OrchestrationResult:
+            code = denial.get("type", "VALIDATION_FAILURE")
+            message = f"{code}: {denial.get('message', 'Validation failed.')}"
+            _log_event(agent, "failed", message, details={"critique": denial})
+            return OrchestrationResult(
+                success=False, final_sql=sql, df=pd.DataFrame(), executive_narrative="",
+                events=events, retry_history=retry_history, schema_card=schema_card,
+                execution_time_ms=(time.perf_counter() - start_time) * 1000,
+                error_message=message,
+            )
 
         # STAGE 1: Schema & Data Reconnaissance (The Explorer)
         _log_event("Explorer", "running", f"Pruning DDLs within authorized scope for user '{username}'...")
@@ -144,6 +181,8 @@ class CentralController:
                     "grounded_values": schema_card.grounded_values
                 }
             )
+        except QueryCancelledError:
+            raise
         except Exception as e:
             _log_event("Explorer", "failed", f"Reconnaissance error: {str(e)}")
             return OrchestrationResult(
@@ -172,7 +211,7 @@ class CentralController:
             retry_note = " [Critique Applied]" if critique else ""
             _log_event(
                 "Coder", "running",
-                f"Drafting T-SQL query (Iteration {iteration}/{max_retries}){retry_note}..."
+                f"Drafting {dialect_label} query (Iteration {iteration}/{max_retries}){retry_note}..."
             )
             try:
                 current_sql = self.coder.generate_sql(
@@ -193,7 +232,9 @@ class CentralController:
                         schema_card=schema_card,
                         error_message="[GROUNDING_ERROR]: Unanswerable from authorized database schema."
                     )
-                _log_event("Coder", "success", f"Drafted raw T-SQL query (Iteration {iteration}).", details={"sql": current_sql})
+                _log_event("Coder", "success", f"Drafted raw {dialect_label} query (Iteration {iteration}).", details={"sql": current_sql})
+            except QueryCancelledError:
+                raise
             except Exception as e:
                 _log_event("Coder", "failed", f"Coder generation error: {str(e)}")
                 critique = {"type": "CODER_EXCEPTION", "message": str(e), "failed_sql": current_sql}
@@ -212,30 +253,37 @@ class CentralController:
                     corrected_sql=current_sql,
                     sql_diff=diff_text
                 ))
+                _log_event("Coder", "retry", "Applied bounded SQL correction.", details={"sql_diff": diff_text,
+                           "failed_sql": failed_sql_before_retry, "corrected_sql": current_sql})
 
             # Agent 3: Guardian (AST Lint, Injection Quarantine, RBAC Table Whitelist)
-            _log_event("Guardian", "running", "Auditing T-SQL AST, injection vectors, and RBAC table whitelists...")
+            _log_event("Guardian", "running", f"Auditing {dialect_label} AST, injection vectors, and RBAC table whitelists...")
             valid_tables = self.db.get_table_names()
             guardian_result: GuardianResult = self.guardian.audit(
                 current_sql,
                 valid_tables=valid_tables,
                 authorized_tables=authorized_tables,
-                username=username
+                username=username,
+                allowed_columns=getattr(self.db, "allowed_columns", None),
             )
 
             if not guardian_result.is_valid:
+                critique = dict(guardian_result.critique or {
+                    "type": "AST_PARSER_FAILURE", "message": "Guardian returned no validation verdict."
+                })
+                critique["agent"] = "Guardian"
+                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
+                    return _terminal_failure("Guardian", current_sql, critique)
                 _log_event(
                     "Guardian", "retry",
-                    f"AST Policy Violation: {guardian_result.critique.get('message')}",
-                    details={"critique": guardian_result.critique}
+                    f"AST Policy Violation: {critique.get('message')}",
+                    details={"critique": critique}
                 )
-                critique = guardian_result.critique
-                critique["agent"] = "Guardian"
                 iteration += 1
                 continue
 
             sanitized_sql = guardian_result.sanitized_sql
-            limit_msg = " [Defensive TOP injected]" if guardian_result.limit_injected else ""
+            limit_msg = (" [Defensive LIMIT injected]" if dialect_label == "PostgreSQL" else " [Defensive TOP injected]") if guardian_result.limit_injected else ""
             _log_event(
                 "Guardian", "success",
                 f"AST passed security firewall and RBAC authorization.{limit_msg}",
@@ -243,7 +291,7 @@ class CentralController:
             )
 
             # Agent 4: Evaluator (Runtime Critic & Data Sanity)
-            _log_event("Evaluator", "running", "Executing T-SQL query in sandbox and evaluating domain sanity...")
+            _log_event("Evaluator", "running", f"Executing {dialect_label} query in sandbox and evaluating domain sanity...")
             eval_result: EvaluationResult = self.critic.evaluate(
                 question=question,
                 sql=sanitized_sql,
@@ -254,13 +302,17 @@ class CentralController:
             )
 
             if not eval_result.success:
+                critique = dict(eval_result.critique or {
+                    "type": "AST_PARSER_FAILURE", "message": "Evaluator returned no validation verdict."
+                })
+                critique["agent"] = "Evaluator"
+                if critique.get("type") in TERMINAL_CRITIQUE_TYPES:
+                    return _terminal_failure("Evaluator", sanitized_sql, critique)
                 _log_event(
                     "Evaluator", "retry",
-                    f"Evaluator triggered diagnostic retry: {eval_result.critique.get('message')}",
-                    details={"critique": eval_result.critique}
+                    f"Evaluator triggered diagnostic retry: {critique.get('message')}",
+                    details={"critique": critique}
                 )
-                critique = eval_result.critique
-                critique["agent"] = "Evaluator"
                 iteration += 1
                 continue
 
@@ -290,7 +342,7 @@ class CentralController:
             success=False,
             final_sql=sanitized_sql or current_sql,
             df=pd.DataFrame(),
-            executive_narrative="Unable to synthesize a verified, non-empty T-SQL query within retry limits.",
+            executive_narrative="Unable to synthesize a verified T-SQL query within retry limits.",
             events=events,
             retry_history=retry_history,
             schema_card=schema_card,

@@ -396,7 +396,7 @@ Example: {{"intent": "DATA_QUERY", "confidence": 0.98, "reasoning": "Inquires ab
             getattr(user_session, "authorized_tables", ["Customer", "Invoice", "InvoiceLine"])
         )
 
-        role_key = "inventory_lead" if "inventory" in username.lower() or "catalog" in username.lower() else "sales_analyst"
+        role_key = getattr(user_session, "role", None) or ("inventory_lead" if "inventory" in username.lower() or "catalog" in username.lower() else "sales_analyst")
         samples_en = ROLE_SAMPLE_QUERIES.get(role_key, ROLE_SAMPLE_QUERIES["sales_analyst"])
         samples_ar = ROLE_SAMPLE_QUERIES_AR.get(role_key, ROLE_SAMPLE_QUERIES_AR["sales_analyst"])
 

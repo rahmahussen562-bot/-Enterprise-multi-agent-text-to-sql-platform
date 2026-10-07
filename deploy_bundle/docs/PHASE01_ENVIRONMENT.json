@@ -1,0 +1,72 @@
+{
+  "verified_at_utc": "2026-10-06T13:18:56.635291+00:00",
+  "environment": "D:\\BIRD-Interact\\deploy_bundle\\.venv",
+  "python": "3.14.3",
+  "base_interpreter": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\python",
+  "dependency_locations": {
+    "sqlglot": {
+      "version": "30.21.0",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\sqlglot\\__init__.py"
+    },
+    "fastapi": {
+      "version": "0.142.2",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\fastapi\\__init__.py"
+    },
+    "uvicorn": {
+      "version": "0.54.0",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\uvicorn\\__init__.py"
+    },
+    "pydantic": {
+      "version": "2.13.5",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\pydantic\\__init__.py"
+    },
+    "pytest": {
+      "version": "9.1.1",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\pytest\\__init__.py"
+    },
+    "reportlab": {
+      "version": "5.0.1",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\reportlab\\__init__.py"
+    },
+    "pyodbc": {
+      "version": "5.3.0",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\pyodbc.cp314-win_amd64.pyd"
+    },
+    "psycopg": {
+      "version": "3.3.6",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\psycopg\\__init__.py"
+    },
+    "asyncpg": {
+      "version": "0.31.0",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\asyncpg\\__init__.py"
+    },
+    "pandas": {
+      "version": "3.0.6",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\pandas\\__init__.py"
+    },
+    "streamlit": {
+      "version": "1.65.0",
+      "location": "D:\\BIRD-Interact\\deploy_bundle\\.venv\\Lib\\site-packages\\streamlit\\__init__.py"
+    }
+  },
+  "pip_check": "No broken requirements found.",
+  "baseline_files_verified": 9,
+  "venv_bytes": 362995827,
+  "python_runtime_bytes": 164043216,
+  "runtime_bytes": 417279326,
+  "d_free_bytes": 118417850368,
+  "d_total_bytes": 140715749376,
+  "odbc_drivers": [
+    "SQL Server"
+  ],
+  "cache_locations": {
+    "TEMP": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\tmp",
+    "TMP": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\tmp",
+    "PIP_CACHE_DIR": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\pip-cache",
+    "UV_CACHE_DIR": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\uv-cache",
+    "PYTHONPYCACHEPREFIX": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\pycache",
+    "PYTHONUSERBASE": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\python-user",
+    "XDG_CACHE_HOME": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\cache",
+    "npm_config_cache": "D:\\BIRD-Interact\\deploy_bundle\\.runtime\\npm-cache"
+  }
+}

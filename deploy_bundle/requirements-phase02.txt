@@ -1,0 +1,5 @@
+# Existing verified engine versions plus HTTP integration and native WS transport.
+-r requirements-phase01.txt
+-c requirements-phase01.lock.txt
+httpx
+websockets

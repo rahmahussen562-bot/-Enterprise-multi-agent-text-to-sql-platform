@@ -1,0 +1,4 @@
+name = "sentinelsql-portal"
+account_id = "d3691c8edea502ade020588b5292be0c"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-10-07"

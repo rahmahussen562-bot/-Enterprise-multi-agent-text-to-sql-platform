@@ -1,0 +1,10 @@
+{
+  "token_verification_http": 200,
+  "token_status": "active",
+  "error_codes": [],
+  "project_http": 401,
+  "project_name": null,
+  "project_error_codes": [
+    10000
+  ]
+}

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="20" failures="0" errors="0" time="0.0739397">
+    <testsuite name="src/api/routing.test.ts" timestamp="2026-10-07T08:19:17.704Z" hostname="DESKTOP-8NFUD93" tests="10" failures="0" errors="0" skipped="0" time="0.0172329">
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; prefers the new API setting and retains the legacy setting" time="0.0053592">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; derives a secure stream from the API origin" time="0.000729">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; supports a separately routed stream origin" time="0.0007015">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; supports local HTTP and relative development routes" time="0.0009461">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects unsafe API configuration http://api.example.com/api/v1" time="0.0020716">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects unsafe API configuration https://user:secret@api.example.com/api/v1" time="0.0005545">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects unsafe API configuration //evil.example/api/v1" time="0.000552">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects unsafe API configuration https://api.example/api/v1?token=private" time="0.0005396">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects unsafe API configuration https://api.example/api/v1#private" time="0.000666">
+        </testcase>
+        <testcase classname="src/api/routing.test.ts" name="production endpoint configuration &gt; rejects insecure remote and token-bearing streams" time="0.0010328">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/api/stream.test.ts" timestamp="2026-10-07T08:19:17.710Z" hostname="DESKTOP-8NFUD93" tests="7" failures="0" errors="0" skipped="0" time="0.0431051">
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; authenticates in a frame and starts only after ready" time="0.0158025">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; deduplicates durable events and resubscribes without repeating execution" time="0.0064108">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; does not resubmit after an ambiguous acknowledgement loss" time="0.0041196">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; cancels before acknowledgement without later starting a query" time="0.0022529">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; recovers a sequence gap from the owned audit endpoint" time="0.0041912">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; delivers the final result only after an in-flight replay closes its gap" time="0.0032819">
+        </testcase>
+        <testcase classname="src/api/stream.test.ts" name="governed stream transport &gt; rejects a final result if the audit cannot close a sequence gap" time="0.0029462">
+        </testcase>
+    </testsuite>
+    <testsuite name="src/lib/data.test.ts" timestamp="2026-10-07T08:19:17.715Z" hostname="DESKTOP-8NFUD93" tests="3" failures="0" errors="0" skipped="0" time="0.0136017">
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; sorts large decimals without Number precision loss" time="0.0048614">
+        </testcase>
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; escapes CSV formula injection while preserving numbers and Unicode" time="0.0014286">
+        </testcase>
+        <testcase classname="src/lib/data.test.ts" name="financial export integrity &gt; writes Excel cells as literal strings and preserves decimal precision" time="0.0033493">
+        </testcase>
+    </testsuite>
+</testsuites>

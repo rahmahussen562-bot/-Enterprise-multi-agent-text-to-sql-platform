@@ -1,6 +1,6 @@
 streamlit>=1.30.0
 pandas>=2.0.0
-sqlglot>=20.0.0
+sqlglot==30.21.0
 plotly>=5.18.0
 pyodbc>=5.0.0
 python-dotenv>=1.0.0

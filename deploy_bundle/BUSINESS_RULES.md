@@ -1,4 +1,25 @@
-# Enterprise Business & Revenue Calculation Rules
+# Enterprise Business Rules
+
+## FinCore Enterprise: authoritative registry v1.0.0
+
+Banking sessions use `data/financial_metrics.v1.json` and the reviewed PostgreSQL
+views in `data/fincore_schema.sql`. [FinCore schema and governance](docs/FINCORE_SCHEMA.md)
+specifies the full contracts. Banking generation cannot fall back to media formulas.
+
+| Metric | Definition | Persona |
+| --- | --- | --- |
+| Daily balance | Posted debits/credits through the institution's business date, using each account's normal side; available balance subtracts active holds at statement time. Currencies remain separate. | `branch_analyst`, assigned branches |
+| High-risk cash | Distinct posted USD cash movements by known person and business day, aggregated across accounts; cash-in and cash-out tested separately against strictly greater than USD 10,000. | `compliance_officer` |
+| Loan performance | Ledger-derived principal, days since earliest unpaid installment, and simple fixed-rate accrual using contractual ACT/360, ACT/365F or 30E/360 fractions. | `branch_analyst`, assigned branches |
+
+The cash rule is a US reference monitoring signal, based on [FinCEN's CTR FAQ](https://www.fincen.gov/resources/frequently-asked-questions-regarding-fincen-currency-transaction-report-ctr).
+It does not file a CTR/SAR, resolve exemptions, translate EUR/EGP into USD, or assert
+Egyptian/EU reporting rules. Unknown financial definitions and unsupported filters
+are rejected. Risk scores and tiers are governed stored assessments, not invented
+model scores. FinCore v1 accepts the reviewed English requests listed in the schema
+guide; arbitrary banking question synthesis requires a later governed extension.
+
+## Legacy Chinook compatibility rules
 
 This document specifies the authoritative corporate business formulas, fee structures, and profit distribution rules for transactional queries in the Enterprise Text-to-SQL Platform.
 

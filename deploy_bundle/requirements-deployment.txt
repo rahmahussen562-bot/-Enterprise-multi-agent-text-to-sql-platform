@@ -1,0 +1,6 @@
+# Validation only; excluded from the production container.
+PyYAML==6.0.3
+cryptography==49.0.0
+cffi==2.1.1
+pycparser==3.0
+ruff==0.16.10

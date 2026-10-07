@@ -1,0 +1,108 @@
+{
+  "frontend_workspace": "D:\\BIRD-Interact\\frontend",
+  "node_runtime": "D:\\BIRD-Interact\\frontend\\.runtime\\node\\node.exe",
+  "python_environment": "D:\\BIRD-Interact\\deploy_bundle\\.venv",
+  "storage_isolation": {
+    "dependencies": "D:\\BIRD-Interact\\frontend\\node_modules",
+    "npm_cache": "D:\\BIRD-Interact\\frontend\\.runtime\\npm-cache",
+    "npm_prefix": "D:\\BIRD-Interact\\frontend\\.runtime\\npm-global",
+    "temporary_files": "D:\\BIRD-Interact\\frontend\\.runtime\\tmp",
+    "vite_cache": "D:\\BIRD-Interact\\frontend\\.runtime\\vite",
+    "build": "D:\\BIRD-Interact\\frontend\\dist",
+    "browser_profile": "D:\\BIRD-Interact\\frontend\\.runtime\\browser-profile",
+    "screenshots": "D:\\BIRD-Interact\\frontend\\.runtime\\screenshots"
+  },
+  "versions": {
+    "react": "19.3.0",
+    "vite": "8.3.3",
+    "typescript": "5.9.3",
+    "tailwindcss": "4.3.3",
+    "@radix-ui/react-dialog": "1.2.0",
+    "lucide-react": "0.577.0",
+    "recharts": "3.10.1",
+    "vitest": "4.1.11"
+  },
+  "backend_tests": {
+    "passed": 250,
+    "baseline_retained": 248,
+    "api_tests": 43,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "original_modules_unchanged": {
+      "tests/test_auth.py": true,
+      "tests/test_critic.py": true,
+      "tests/test_database.py": true,
+      "tests/test_guardian.py": true,
+      "tests/test_intent_router.py": true,
+      "tests/test_orchestrator.py": true,
+      "tests/test_reconnaissance.py": true,
+      "tests/test_visualizer.py": true
+    }
+  },
+  "frontend_tests": {
+    "passed": 10,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "phase02_rest_contracts_unchanged": true,
+  "phase02_schema_contracts_unchanged": true,
+  "new_rest_routes": [
+    "/api/v1/health",
+    "/api/v1/schema"
+  ],
+  "browser_integration": {
+    "simulator": true,
+    "rtl": true,
+    "mobileOverflow": false,
+    "serverRoleIsolation": true,
+    "websocket": true,
+    "exports": true,
+    "memoryOnlySession": true,
+    "workspaceMobileOverflow": false,
+    "rest": true,
+    "browserErrors": []
+  },
+  "browser_backend_graceful_shutdown": true,
+  "actual_xlsx_reopened": {
+    "data_rows": 5,
+    "columns": 5,
+    "formulas": 0
+  },
+  "source_policy": {
+    "emojiFiles": [],
+    "passed": true
+  },
+  "dependency_audit": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 0,
+      "critical": 0,
+      "total": 0
+    },
+    "dependencies": {
+      "prod": 80,
+      "dev": 142,
+      "optional": 50,
+      "peer": 1,
+      "peerOptional": 0,
+      "total": 222
+    }
+  },
+  "directory_bytes": {
+    "node_modules": 191608163,
+    ".runtime": 527921530,
+    "dist": 982478
+  },
+  "d_free_bytes": 117401231360,
+  "build_assets_bytes": {
+    "browser-dCISOrnY.js": 8782,
+    "ChartPanel-CmlaI9mL.js": 358000,
+    "index-DfhR5Oyq.css": 37219,
+    "index-w9m1T7gY.js": 358951
+  },
+  "verification_boundary": "Local Edge, real FastAPI/SQLite and offline synthesis; no live SQL Server, external LLM, or Cloudflare deployment."
+}

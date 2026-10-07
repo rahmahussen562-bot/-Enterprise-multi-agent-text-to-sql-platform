@@ -1,0 +1,10 @@
+# Phase 0/1 runtime, API preparation, database drivers, and verification tools.
+-r requirements.txt
+fastapi
+uvicorn
+pydantic
+pytest
+reportlab
+psycopg[binary]
+asyncpg
+

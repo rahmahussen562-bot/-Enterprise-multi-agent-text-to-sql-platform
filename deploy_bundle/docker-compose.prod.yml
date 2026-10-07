@@ -1,0 +1,172 @@
+name: sentinelsql
+services:
+  fastapi:
+    image: ${FASTAPI_IMAGE:?Set an immutable FastAPI image digest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 768m
+    cpus: 2.0
+    stop_grace_period: 40s
+    tmpfs: [/tmp:size=32m,mode=1777]
+    environment:
+      SENTINEL_ALLOWED_ORIGINS: ${FRONTEND_ORIGIN:?Set the frontend origin}
+      SENTINEL_API_WORKERS: ${API_WORKERS:-4}
+      SENTINEL_JOB_TIMEOUT: ${JOB_TIMEOUT_SECONDS:-60}
+      SENTINEL_SESSION_TTL: ${SESSION_TTL_SECONDS:-900}
+      SENTINEL_AUTH_FILE: /run/secrets/accounts.json
+      SENTINEL_SESSION_KEY_FILE: /run/secrets/session.key
+      SENTINEL_PG_AUTH_FILE: /run/secrets/postgres-identities.json
+      SENTINEL_API_STATE: /var/lib/sentinelsql/jobs.sqlite
+    secrets:
+      - source: api_accounts
+        target: accounts.json
+      - source: session_key
+        target: session.key
+      - source: pg_identities
+        target: postgres-identities.json
+      - source: pg_ca
+        target: postgres-ca.crt
+    volumes:
+      - ${DATA_ROOT:?Set persistent storage root}/api:/var/lib/sentinelsql
+    expose: ["8000"]
+    networks: [origin, database]
+    depends_on:
+      fincore_postgres:
+        condition: service_healthy
+  fincore_postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826}
+    restart: unless-stopped
+    shm_size: 128mb
+    mem_limit: 768m
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    entrypoint: [/bin/sh, /opt/sentinel/postgres-entrypoint.sh]
+    configs:
+      - source: postgres_entrypoint
+        target: /opt/sentinel/postgres-entrypoint.sh
+    tmpfs: [/var/lib/postgresql/tls:size=2m,mode=0755]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fincore}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-sentinel_admin}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/tls/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/tls/server.key
+      - -c
+      - max_connections=40
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - log_statement=none
+      - -c
+      - log_min_error_statement=panic
+    secrets:
+      - pg_password
+      - source: pg_server_cert
+        target: postgres-server.crt
+      - source: pg_server_key
+        target: postgres-server.key
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+    expose: ["5432"]
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07}
+    profiles: [edge]
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 64
+    command: [tunnel, --no-autoupdate, --metrics, "0.0.0.0:2000", run, --token-file, /run/secrets/tunnel-token]
+    secrets:
+      - source: tunnel_token
+        target: tunnel-token
+    networks: [origin, edge_egress]
+    depends_on:
+      fastapi:
+        condition: service_healthy
+  private_ingress:
+    image: ${PRIVATE_INGRESS_IMAGE:-nginxinc/nginx-unprivileged:stable-alpine}
+    profiles: [private]
+    user: "10001:10001"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    pids_limit: 64
+    tmpfs: [/tmp:size=8m,mode=1777]
+    command: [nginx, -g, "daemon off;"]
+    configs:
+      - source: private_ingress_config
+        target: /etc/nginx/conf.d/default.conf
+    secrets:
+      - source: private_ingress_cert
+        target: private-ingress.crt
+      - source: private_ingress_key
+        target: private-ingress.key
+    # Modern Linux Docker permits non-root binding inside the network namespace.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    expose: ["443"]
+    networks:
+      origin:
+        aliases: ["${API_HOSTNAME:-api.sentinelsql.internal}"]
+    depends_on:
+      fastapi:
+        condition: service_healthy
+networks:
+  origin:
+    internal: true
+  database:
+    internal: true
+  edge_egress: {}
+configs:
+  postgres_entrypoint:
+    file: ./ops/postgres-entrypoint.sh
+  private_ingress_config:
+    file: ./ops/private-ingress.conf
+secrets:
+  api_accounts:
+    file: ${SECRETS_DIR:?Set private secrets directory}/accounts.json
+  session_key:
+    file: ${SECRETS_DIR}/session.key
+  pg_identities:
+    file: ${SECRETS_DIR}/postgres-identities.json
+  pg_password:
+    file: ${SECRETS_DIR}/postgres-password
+  pg_ca:
+    file: ${SECRETS_DIR}/postgres-ca.crt
+  pg_server_cert:
+    file: ${SECRETS_DIR}/postgres-server.crt
+  pg_server_key:
+    file: ${SECRETS_DIR}/postgres-server.key
+  tunnel_token:
+    file: ${SECRETS_DIR}/tunnel-token
+  private_ingress_cert:
+    file: ${SECRETS_DIR}/private-ingress.crt
+  private_ingress_key:
+    file: ${SECRETS_DIR}/private-ingress.key

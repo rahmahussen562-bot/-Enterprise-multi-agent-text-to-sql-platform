@@ -1,27 +1,26 @@
-"""
-Agent 3: Deterministic AST SQL Injection Firewall & RLC Enforcement (The Guardian)
-Parses T-SQL queries into an Abstract Syntax Tree (AST) using sqlglot (dialect="tsql").
-Enforces anti-injection quarantine, table-level RBAC/RLC authorization,
-Cartesian join defense, and automatic T-SQL TOP 100 injection.
-"""
+"""Deterministic, fail-closed AST firewall and table authorization for SQL."""
 import logging
-import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
+
+from core.sql_validation import (
+    ValidationError, identifier_parts, parse_single_query, physical_tables,
+    query_scopes, table_matches_allowed,
+)
 
 logger = logging.getLogger("TextToSQL.Guardian")
 
-# Destructive and dangerous T-SQL tokens blocked by firewall
+# Retained for callers importing the legacy token registry. Authorization uses
+# parsed nodes, so harmless words inside comments/literals do not become SQL.
 DISALLOWED_TOKENS = {
     "DROP", "DELETE", "UPDATE", "ALTER", "TRUNCATE", "INSERT",
     "REPLACE", "CREATE", "GRANT", "REVOKE", "EXEC", "EXECUTE",
-    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET"
+    "SHUTDOWN", "XP_CMDSHELL", "SP_EXECUTESQL", "BULK", "OPENROWSET",
 }
 
 
 class SecurityViolationException(PermissionError):
     """Raised or quarantined when an unauthorized table is referenced."""
-    pass
 
 
 @dataclass
@@ -34,11 +33,96 @@ class GuardianResult:
 
 
 class ASTGuardianAgent:
-    """Agent 3: AST Static Linter & Firewall Agent (The Guardian) for T-SQL."""
+    """Read-only query firewall preserving the original Guardian contract."""
 
     def __init__(self, default_limit: int = 100, dialect: str = "tsql"):
+        if not isinstance(default_limit, int) or default_limit <= 0:
+            raise ValueError("default_limit must be a positive integer")
         self.default_limit = default_limit
         self.dialect = dialect.lower()
+
+    @staticmethod
+    def _deny(sql: str, code: str, message: str, remediation: str) -> GuardianResult:
+        critique = {
+            "type": code, "message": message, "failed_sql": sql,
+            "remediation": remediation,
+        }
+        return GuardianResult(False, sql, critique=critique, issues=[message])
+
+    def _reject_identifier_collisions(self, names: Optional[List[str]]) -> None:
+        """Case-folded lookup must not collapse two distinct catalog objects."""
+        from sqlglot import exp
+
+        seen = {}
+        for name in names or []:
+            relation = exp.to_table(str(name), dialect=self.dialect)
+            if self.dialect == "tsql" and len(identifier_parts(relation)) == 1:
+                relation.set("db", exp.to_identifier("dbo"))
+            folded = identifier_parts(relation)
+            spelling = tuple(part.name for part in relation.parts)
+            if folded in seen and seen[folded] != spelling:
+                raise ValidationError(
+                    "AST_IDENTIFIER_COLLISION",
+                    f"Distinct relation spellings {seen[folded]} and {spelling} collide under identifier matching.",
+                )
+            seen[folded] = spelling
+
+    def _canonicalize_table(self, table: Any, names: Optional[List[str]]) -> None:
+        """Render the permitted physical identity, never an implicit schema."""
+        from sqlglot import exp
+
+        canonical = table.copy()
+        for name in names or []:
+            if table_matches_allowed(table, [name], dialect=self.dialect):
+                canonical = exp.to_table(str(name), dialect=self.dialect)
+                break
+        if self.dialect == "tsql" and len(identifier_parts(canonical)) == 1:
+            canonical.set("db", exp.to_identifier("dbo"))
+
+        # Table aliases remain query-owned names, separate from the authorized
+        # physical identifier. Keep implicit table qualifiers working when a
+        # case-insensitive match is rendered using its approved spelling.
+        original_name = table.this.copy()
+        changed_name = table.name != canonical.name
+        for key in ("this", "db", "catalog"):
+            value = canonical.args.get(key)
+            table.set(key, value.copy() if value is not None else None)
+        if changed_name and not table.alias:
+            table.set("alias", exp.TableAlias(this=original_name))
+
+    @staticmethod
+    def _joins_scopes(predicate: Any, previous: set, joined: str) -> bool:
+        """Require a non-vacuous ON relationship for every possible OR branch."""
+        from sqlglot import exp
+
+        if predicate is None:
+            return False
+        if isinstance(predicate, exp.Paren):
+            return ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
+        if isinstance(predicate, exp.And):
+            return (
+                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
+                or ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
+            )
+        if isinstance(predicate, exp.Or):
+            return (
+                ASTGuardianAgent._joins_scopes(predicate.this, previous, joined)
+                and ASTGuardianAgent._joins_scopes(predicate.expression, previous, joined)
+            )
+        comparison_types = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+        if not isinstance(predicate, comparison_types):
+            return False
+
+        def sources(side: Any) -> set:
+            if side is None or side.find(exp.Select) is not None:
+                return set()
+            return {column.table.casefold() for column in side.find_all(exp.Column) if column.table}
+
+        left, right = sources(predicate.this), sources(predicate.expression)
+        return bool(
+            (joined in left and right.intersection(previous))
+            or (joined in right and left.intersection(previous))
+        )
 
     def audit(
         self,
@@ -47,22 +131,11 @@ class ASTGuardianAgent:
         authorized_tables: Optional[Any] = None,
         username: Optional[str] = None,
         user_session: Optional[Any] = None,
-        raise_on_violation: bool = False
+        raise_on_violation: bool = False,
+        allowed_columns: Optional[Dict[str, List[str]]] = None,
     ) -> GuardianResult:
-        """
-        Audit raw T-SQL query:
-        1. Multi-statement injection quarantine (semicolon stacked queries).
-        2. Dangerous token firewall.
-        3. AST syntax parsing via sqlglot (dialect="tsql").
-        4. AST node quarantine (blocking non-SELECT, Drop, Delete, Exec, etc.).
-        5. Cartesian join detection.
-        6. Strict Table-Level Privilege Enforcement (RBAC/RLC).
-        7. Defensive T-SQL TOP 100 injection.
-        """
-        issues: List[str] = []
+        """Validate one AST, bind physical relations, and cap its outer result."""
         clean_sql = raw_sql.strip()
-
-        # Resolve session context if provided
         if user_session is not None:
             if hasattr(user_session, "allowed_tables"):
                 authorized_tables = user_session.allowed_tables
@@ -73,185 +146,125 @@ class ASTGuardianAgent:
         elif authorized_tables is not None and hasattr(authorized_tables, "allowed_tables"):
             authorized_tables = authorized_tables.allowed_tables
 
-        # Phase 1: Fast Regex Security Screening
-        tokens = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", clean_sql.upper()))
-        found_destructive = tokens.intersection(DISALLOWED_TOKENS)
-        if found_destructive:
-            critique = {
-                "type": "AST_SECURITY_VIOLATION",
-                "message": f"Security Firewall blocked destructive/command token(s): {sorted(list(found_destructive))}",
-                "failed_sql": clean_sql,
-                "remediation": "Only read-only SELECT or WITH statements are authorized. Remove destructive clauses."
-            }
-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-        # Phase 2: AST Parsing and Multi-Statement Injection Check
         try:
-            import sqlglot
+            expression = parse_single_query(clean_sql, dialect=self.dialect)
             from sqlglot import exp
 
-            statements = sqlglot.parse(clean_sql, read=self.dialect)
-            if not statements:
-                critique = {
-                    "type": "AST_SYNTAX_ERROR",
-                    "message": "Empty or unparseable SQL statement.",
-                    "failed_sql": clean_sql,
-                    "remediation": "Provide a valid T-SQL SELECT query."
-                }
-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-            # Multi-statement injection quarantine
-            if len(statements) > 1:
-                critique = {
-                    "type": "SQL_INJECTION_QUARANTINE",
-                    "message": f"Multi-statement execution detected ({len(statements)} statements). Stacked queries are prohibited.",
-                    "failed_sql": clean_sql,
-                    "remediation": "Submit only a single, isolated SELECT statement without semicolons or stacked commands."
-                }
-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-            expression = statements[0]
-
-            # Phase 3: Enforce Read-Only SELECT Root and Quarantine Forbidden AST Nodes
-            if not isinstance(expression, (exp.Select, exp.Union)):
-                critique = {
-                    "type": "INVALID_QUERY_ROOT",
-                    "message": f"Query root is '{type(expression).__name__}', expected SELECT or WITH (Select) expression.",
-                    "failed_sql": clean_sql,
-                    "remediation": "Structure query as a standard T-SQL SELECT or Common Table Expression (WITH ... SELECT ...)."
-                }
-                return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-            forbidden_node_types = (
-                exp.Drop, exp.Delete, exp.Update, exp.Alter, exp.Insert,
-                exp.Command, exp.Create, exp.Grant, exp.Revoke, exp.Execute
-            )
-            for forbidden_type in forbidden_node_types:
-                if expression.find(forbidden_type):
-                    critique = {
-                        "type": "AST_SECURITY_VIOLATION",
-                        "message": f"Security Firewall quarantined forbidden AST node type: {forbidden_type.__name__}",
-                        "failed_sql": clean_sql,
-                        "remediation": "Only non-mutating SELECT queries are permitted."
-                    }
-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-            # Phase 4: Cartesian Product Detection (Missing Join Predicate or Vacuous ON TRUE)
-            for join in expression.find_all(exp.Join):
-                on_clause = join.args.get("on")
-                has_using = join.args.get("using") is not None
-                is_cross = join.kind == "CROSS" or "CROSS" in str(join).upper()
-                is_vacuous_on = on_clause is None or str(on_clause).strip().upper() in ["TRUE", "1", "1 = 1", "1=1"]
-
-                if (is_vacuous_on and not has_using) or is_cross:
-                    where = expression.find(exp.Where)
-                    if not where:
-                        critique = {
-                            "type": "AST_CARTESIAN_PRODUCT",
-                            "message": f"Unintended Cartesian join detected on table {join.this}. Missing explicit 'ON' predicate.",
-                            "failed_sql": clean_sql,
-                            "remediation": "Add an explicit 'ON tableA.col = tableB.col' predicate to prevent table explosion."
-                        }
-                        return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
-
-            # Phase 5: Extract Referenced Tables and Filter Out CTE Aliases
-            referenced_tables = [
-                t.name.lower() for t in expression.find_all(exp.Table)
-                if t.name
-            ]
-            cte_names = set()
-            with_node = expression.find(exp.With)
-            if with_node:
-                for cte in with_node.expressions:
-                    if hasattr(cte, "alias") and cte.alias:
-                        cte_names.add(cte.alias.lower())
-
-            actual_tables = [t for t in referenced_tables if t not in cte_names]
-
-            # Phase 6: Strict Table-Level Privilege Enforcement (RBAC/RLC)
-            if authorized_tables is not None:
-                whitelist_lower = {t.strip("[]\"'").lower() for t in authorized_tables}
-                unauthorized_tables = [t for t in actual_tables if t.strip("[]\"'").lower() not in whitelist_lower]
-                if unauthorized_tables:
-                    unauth_table = unauthorized_tables[0]
-                    role_str = username or "Active Role"
-                    violation_msg = f"SecurityViolationException: Table [{unauth_table}] is unauthorized for role [{role_str}]."
-                    critique = {
-                        "type": "RBAC_AUTHORIZATION_VIOLATION",
-                        "message": violation_msg,
-                        "failed_sql": clean_sql,
-                        "remediation": f"Only query authorized tables from your corporate scope: {authorized_tables}."
-                    }
+            scopes = query_scopes(expression)
+            tables = physical_tables(expression)
+            self._reject_identifier_collisions(valid_tables)
+            self._reject_identifier_collisions(authorized_tables)
+            for table in tables:
+                identity = ".".join(identifier_parts(table))
+                if authorized_tables is not None and not table_matches_allowed(
+                    table, authorized_tables, dialect=self.dialect,
+                ):
+                    role = username or "Active Role"
+                    message = f"SecurityViolationException: Table [{identity}] is unauthorized for role [{role}]."
                     if raise_on_violation:
-                        raise SecurityViolationException(violation_msg)
-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[violation_msg])
+                        raise SecurityViolationException(message)
+                    return self._deny(
+                        clean_sql, "RBAC_AUTHORIZATION_VIOLATION", message,
+                        f"Only query authorized relations from corporate scope: {authorized_tables}.",
+                    )
+                if valid_tables is not None and not table_matches_allowed(
+                    table, valid_tables, dialect=self.dialect,
+                ):
+                    return self._deny(
+                        clean_sql, "SCHEMA_MISMATCH",
+                        f"Query references non-existent relation [{identity}].",
+                        f"Reference only verified relations: {valid_tables}.",
+                    )
+                self._canonicalize_table(
+                    table, authorized_tables if authorized_tables is not None else valid_tables,
+                )
 
-            # Phase 7: Schema Conformance Check (Against Database Tables)
-            if valid_tables:
-                valid_set = {t.lower() for t in valid_tables}
-                unknown_tables = [tbl for tbl in actual_tables if tbl not in valid_set]
-                if unknown_tables:
-                    critique = {
-                        "type": "SCHEMA_MISMATCH",
-                        "message": f"Query references non-existent table(s): {unknown_tables}.",
-                        "failed_sql": clean_sql,
-                        "remediation": f"Reference only verified tables from the database schema: {valid_tables}."
-                    }
-                    return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+            # An unrelated WHERE (including one inside a nested query) cannot
+            # authorize a CROSS JOIN or vacuous ON in any other SELECT scope.
+            for scope in scopes:
+                select = scope.expression
+                if not isinstance(select, exp.Select):
+                    continue
+                from_clause = select.args.get("from_") or select.args.get("from")
+                previous = set()
+                if from_clause is not None and from_clause.this is not None:
+                    previous.add(from_clause.this.alias_or_name.casefold())
+                for join in select.args.get("joins") or []:
+                    joined = join.this.alias_or_name.casefold()
+                    using = join.args.get("using")
+                    has_relationship = bool(using) or self._joins_scopes(join.args.get("on"), previous, joined)
+                    if join.kind.upper() == "CROSS" or not has_relationship:
+                        return self._deny(
+                            clean_sql, "AST_CARTESIAN_PRODUCT",
+                            f"Unintended Cartesian join detected on source {join.this}.",
+                            "Use an explicit non-vacuous ON relationship between joined sources, or USING columns.",
+                        )
+                    previous.add(joined)
 
-            # Phase 8: Defensive T-SQL Safeguard (Automatic TOP 100 Injection)
-            limit_injected = False
-            has_limit = expression.find(exp.Limit) is not None
-            has_offset = expression.find(exp.Offset) is not None
+            if allowed_columns is not None:
+                # A projection wildcard must not expand to masked fields in a
+                # physical relation. COUNT(*) remains an analytical aggregate.
+                for node in expression.find_all(exp.Star):
+                    if not isinstance(node.parent, exp.Count):
+                        raise ValidationError("COLUMN_AUTHORIZATION_VIOLATION", "Explicit authorized column projections are required.")
+                from agents.critic import RuntimeCriticAgent
+                class MaskedCatalog:
+                    dialect = self.dialect
+                    def get_table_columns_info(catalog, name):
+                        if name not in allowed_columns:
+                            raise ValidationError("HALLUCINATION_SCHEMA_UNAVAILABLE", "No masked column policy for this relation.")
+                        return [{"name": column} for column in allowed_columns[name]]
+                denial = RuntimeCriticAgent(MaskedCatalog()).validate_schema_grounding(
+                    expression.sql(dialect=self.dialect), authorized_tables=list(allowed_columns))
+                if denial:
+                    raise ValidationError("COLUMN_AUTHORIZATION_VIOLATION", "Column reference is outside the verified masked scope.")
 
-            if not has_limit and not has_offset:
-                expression = expression.limit(self.default_limit)
-                limit_injected = True
-                issues.append(f"Injected defensive TOP {self.default_limit} to safeguard against unindexed table explosion.")
+            # Inspect only the root limit. A nested TOP, OFFSET, TOP PERCENT,
+            # WITH TIES, parameter, or oversized TOP cannot defeat the row cap.
+            root_limit = expression.args.get("limit")
+            literal = (root_limit.expression or root_limit.args.get("count")) if root_limit is not None else None
+            safe_limit = False
+            if root_limit is not None and isinstance(literal, exp.Literal) and not literal.is_string:
+                try:
+                    count = int(literal.this)
+                    options = root_limit.args.get("limit_options")
+                    modifiers = bool(options and (options.args.get("percent") or options.args.get("with_ties")))
+                    safe_limit = 0 <= count <= self.default_limit and not modifiers
+                except (TypeError, ValueError):
+                    pass
+            limit_injected = not safe_limit
+            issues: List[str] = []
+            if limit_injected:
+                expression.set("limit", exp.Limit(expression=exp.Literal.number(self.default_limit)))
+                issues.append(f"Enforced defensive outer result limit of {self.default_limit} rows.")
 
-            sanitized_sql = expression.sql(dialect="tsql")
             return GuardianResult(
-                is_valid=True,
-                sanitized_sql=sanitized_sql,
-                critique=None,
-                issues=issues,
-                limit_injected=limit_injected
+                True, expression.sql(dialect=self.dialect),
+                issues=issues, limit_injected=limit_injected,
             )
-
         except SecurityViolationException:
             raise
-        except ImportError:
-            logger.info("sqlglot not available; applying fallback linter.")
-            return self._fallback_audit(clean_sql, valid_tables, authorized_tables, username)
-        except Exception as e:
-            critique = {
-                "type": "AST_SYNTAX_ERROR",
-                "message": f"AST parser failed on T-SQL syntax: {str(e)}",
-                "failed_sql": clean_sql,
-                "remediation": "Correct T-SQL syntax errors, brackets, or unmatched parentheses."
-            }
-            return GuardianResult(is_valid=False, sanitized_sql=clean_sql, critique=critique, issues=[critique["message"]])
+        except ValidationError as error:
+            return self._deny(
+                clean_sql, error.code, error.message,
+                "Submit one read-only query using the verified, authorized schema; strict AST validation is required.",
+            )
+        except Exception as error:
+            logger.warning("AST validation failed closed: %s", error)
+            return self._deny(
+                clean_sql, "AST_PARSER_FAILURE", f"AST validation could not complete: {error}",
+                "Restore the required parser and correct SQL syntax before execution.",
+            )
 
     def _fallback_audit(
         self,
         sql: str,
         valid_tables: Optional[List[str]],
         authorized_tables: Optional[List[str]],
-        username: Optional[str]
+        username: Optional[str],
     ) -> GuardianResult:
-        """Heuristic fallback linter."""
-        issues = []
-        limit_injected = False
-
-        if not re.search(r"\bTOP\s+\d+", sql, re.IGNORECASE):
-            sql = re.sub(r"^\s*SELECT\b", f"SELECT TOP {self.default_limit}", sql, count=1, flags=re.IGNORECASE)
-            limit_injected = True
-            issues.append(f"Injected defensive TOP {self.default_limit}.")
-
-        return GuardianResult(
-            is_valid=True,
-            sanitized_sql=sql,
-            critique=None,
-            issues=issues,
-            limit_injected=limit_injected
+        """Retained legacy hook; fallback execution is expressly forbidden."""
+        return self._deny(
+            sql, "AST_PARSER_FAILURE", "Strict AST validation is unavailable; execution is prohibited.",
+            "Install and restore the required SQLGlot parser before executing queries.",
         )

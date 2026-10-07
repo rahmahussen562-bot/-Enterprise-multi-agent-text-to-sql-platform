@@ -62,7 +62,8 @@ class DatabaseConfig:
     trust_server_certificate: bool = os.getenv("MSSQL_TRUST_SERVER_CERTIFICATE", "yes").lower() in ("yes", "true", "1")
     encrypt: str = os.getenv("MSSQL_ENCRYPT", "optional")
 
-    # Local fallback storage for resilient offline testing
+    # Offline emulation is an explicit demo choice, never a production fallback.
+    allow_sqlite_emulation: bool = os.getenv("SENTINEL_DEMO_MODE", "false").lower() in ("yes", "true", "1")
     sqlite_path: str = os.getenv("SQLITE_PATH", "data/chinook.db")
     connection_timeout_sec: int = int(os.getenv("MSSQL_TIMEOUT", "10"))
     query_timeout_sec: int = int(os.getenv("MSSQL_QUERY_TIMEOUT", "15"))

@@ -1,0 +1,21 @@
+# Explicit allowlist: no accounts, tokens, database dumps, tests or local caches.
+**
+!Dockerfile
+!requirements-production.txt
+!requirements-phase04.lock.txt
+!BUSINESS_RULES.md
+!api/
+!api/**.py
+!agents/
+!agents/**.py
+!core/
+!core/**.py
+!utils/
+!utils/**.py
+!data/
+!data/fincore_schema.sql
+!data/financial_metrics.v1.json
+!tools/
+!tools/migrate_fincore.py
+!tools/container_health.py
+**/__pycache__/**

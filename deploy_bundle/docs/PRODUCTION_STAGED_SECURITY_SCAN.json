@@ -1,0 +1,14 @@
+{
+  "mode": "staged",
+  "scanned_files": 223,
+  "required_ignore_rules_verified": true,
+  "unignored_private_paths": [],
+  "findings": [],
+  "synthetic_negative_test_urls": [
+    "deploy_bundle/docs/PHASE56_FRONTEND_TEST_RESULTS.xml",
+    "frontend/src/api/routing.test.ts",
+    "frontend/tools/pages-security.test.mjs"
+  ],
+  "secret_values_printed": false,
+  "pass": true
+}
