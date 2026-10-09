@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agents.reconnaissance import SchemaCard
-from core.config import LLMConfig, get_config
+from core.config import LLMConfig, SystemConfig, get_config
 
 logger = logging.getLogger("TextToSQL.Coder")
 
@@ -18,8 +18,8 @@ logger = logging.getLogger("TextToSQL.Coder")
 class SQLCoderAgent:
     """Agent 2: SQL Synthesis Specialist Agent (The Coder) for T-SQL."""
 
-    def __init__(self, llm_config: Optional[LLMConfig] = None, dialect: str = "tsql"):
-        self.config = get_config()
+    def __init__(self, llm_config: Optional[LLMConfig] = None, dialect: str = "tsql", config: Optional[SystemConfig] = None):
+        self.config = config or get_config()
         self.llm_cfg = llm_config or self.config.llm
         self.dialect = dialect.lower()
 

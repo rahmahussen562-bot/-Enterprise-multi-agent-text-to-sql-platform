@@ -3,6 +3,7 @@ import re
 from agents.intent_router import IntentResult, IntentRouter, IntentType
 from agents.orchestrator import CentralController
 from agents.reconnaissance import SchemaCard
+from core.config import SystemConfig
 from core.fincore import FinancialMetricRegistry, ROLE_COLUMNS
 
 SAMPLES = {
@@ -13,11 +14,15 @@ SAMPLES = {
 
 
 class FinCoreIntentRouter:
+    def __init__(self):
+        # Banking routing does not provision the legacy media/vector directories.
+        self._boundary = IntentRouter(config=SystemConfig())
+
     def classify(self, question, user_session=None):
         q = question.strip().lower()
         role = getattr(user_session, 'role', '')
         # Preserve the deterministic injection boundary before domain routing.
-        legacy = IntentRouter()._semantic_domain_fallback(question)
+        legacy = self._boundary._semantic_domain_fallback(question)
         if legacy[0] == IntentType.SECURITY_ATTACK:
             return IntentResult(IntentType.SECURITY_ATTACK, 1.0, response_message='Security boundary violation rejected.')
         if not q or legacy[0] == IntentType.HELP:
@@ -99,7 +104,9 @@ class FinCoreCoder:
 
 class FinCoreController(CentralController):
     def __init__(self, database, role):
-        super().__init__(db_engine=database,vanna_engine=NoRetrieval())
+        # The banking engine reads its approved metric catalog and PostgreSQL
+        # views; all mutable API state lives in the separately mounted volume.
+        super().__init__(db_engine=database,vanna_engine=NoRetrieval(),config=SystemConfig())
         self.intent_router = FinCoreIntentRouter()
         self.explorer = FinCoreExplorer(database)
         self.coder = FinCoreCoder(role)

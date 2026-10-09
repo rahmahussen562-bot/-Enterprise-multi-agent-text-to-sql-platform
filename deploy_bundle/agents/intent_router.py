@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from core.auth import UserSession
-from core.config import LLMConfig, get_config
+from core.config import LLMConfig, SystemConfig, get_config
 
 logger = logging.getLogger("AegisSQL.IntentRouter")
 
@@ -124,8 +124,8 @@ class IntentRouter:
         "override or security boundary violation."
     )
 
-    def __init__(self, llm_config: Optional[LLMConfig] = None):
-        self.config = get_config()
+    def __init__(self, llm_config: Optional[LLMConfig] = None, config: Optional[SystemConfig] = None):
+        self.config = config or get_config()
         self.llm_cfg = llm_config or self.config.llm
 
     def classify_intent_semantic(

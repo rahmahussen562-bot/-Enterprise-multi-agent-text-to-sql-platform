@@ -53,7 +53,16 @@ except urllib.error.URLError as error:
     result = subprocess.run(['docker','exec','--interactive',container,'python','-c',script],
         input=json.dumps({'path':path,'payload':payload,'token':token}),capture_output=True,text=True)
     if result.returncode:
-        print('Container API probe failed: '+path,file=sys.stderr)
+        # The probe emits only status/type metadata on stderr. Responses and
+        # credentials remain captured, including failed login/query payloads.
+        try:
+            diagnostic = json.loads(result.stderr)
+        except ValueError:
+            diagnostic = {}
+        safe = {key: value for key, value in diagnostic.items()
+                if (key == 'http_status' and isinstance(value, int)) or
+                   (key == 'transport_error_type' and isinstance(value, str) and value.isidentifier())}
+        print('Container API probe failed: '+path+' '+json.dumps(safe),file=sys.stderr)
         raise RuntimeError('Container API probe failed.')
     return json.loads(result.stdout)
 

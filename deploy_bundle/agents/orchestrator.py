@@ -85,10 +85,10 @@ class CentralController:
 
         self.explorer = ReconnaissanceAgent(self.db, self.vanna)
         dialect = getattr(self.db, "dialect", "tsql")
-        self.coder = SQLCoderAgent(self.config.llm, dialect=dialect)
+        self.coder = SQLCoderAgent(self.config.llm, dialect=dialect, config=self.config)
         self.guardian = ASTGuardianAgent(default_limit=self.config.agent.defensive_limit, dialect=dialect)
         self.critic = RuntimeCriticAgent(self.db, timeout_sec=self.config.db.query_timeout_sec)
-        self.intent_router = IntentRouter()
+        self.intent_router = IntentRouter(config=self.config)
 
     def classify_intent(self, question: str, user_session: Optional[UserSession] = None) -> IntentResult:
         """Classify question intent against security, capability, and database boundaries."""
