@@ -13,6 +13,9 @@ assert set(services)=={'fastapi','fincore_postgres','cloudflared','private_ingre
 assert not any(service.get('ports') for service in services.values())
 assert services['fastapi']['user']=='10001:10001' and services['fastapi']['read_only']
 assert services['fastapi']['cap_drop']==['ALL']
+for name, service in services.items():
+    for mount in service.get('tmpfs', []):
+        assert isinstance(mount, str) and mount.split(':', 1)[0].startswith('/'), f'{name}: tmpfs entries must have absolute mount paths'
 assert compose['networks']['database']['internal']
 assert 'ssl=on' in services['fincore_postgres']['command']
 assert '--token-file' in services['cloudflared']['command']
@@ -36,7 +39,7 @@ assert (ROOT.parent/'frontend/public/_redirects').read_text().strip()=='/* /inde
 for folder in ['api','core','agents']:
     for path in (ROOT/folder).glob('*.py'):
         ast.parse(path.read_text(encoding='utf-8'))
-result={'yaml_and_toml':'passed','private_ports':'passed','secret_file_mounts':'passed',
+result={'yaml_and_toml':'passed','tmpfs_mount_paths':'passed','private_ports':'passed','secret_file_mounts':'passed',
     'release_gate_dependencies':'passed','pages_project':'sentinelsql-portal',
     'container_build':'not assessed by this static validator; run the container CI gate',
     'live_cloudflare_deployment':'not assessed by this static validator; run the live ingress/release gate',

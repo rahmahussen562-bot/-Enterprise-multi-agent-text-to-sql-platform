@@ -15,7 +15,7 @@ services:
     mem_limit: 768m
     cpus: 2.0
     stop_grace_period: 40s
-    tmpfs: [/tmp:size=32m,mode=1777]
+    tmpfs: ["/tmp:size=32m,mode=1777"]
     environment:
       SENTINEL_ALLOWED_ORIGINS: ${FRONTEND_ORIGIN:?Set the frontend origin}
       SENTINEL_API_WORKERS: ${API_WORKERS:-4}
@@ -52,7 +52,7 @@ services:
     configs:
       - source: postgres_entrypoint
         target: /opt/sentinel/postgres-entrypoint.sh
-    tmpfs: [/var/lib/postgresql/tls:size=2m,mode=0755]
+    tmpfs: ["/var/lib/postgresql/tls:size=2m,mode=0755"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-fincore}
       POSTGRES_USER: ${POSTGRES_ADMIN_USER:-sentinel_admin}
@@ -118,7 +118,7 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: 64m
     pids_limit: 64
-    tmpfs: [/tmp:size=8m,mode=1777]
+    tmpfs: ["/tmp:size=8m,mode=1777"]
     command: [nginx, -g, "daemon off;"]
     configs:
       - source: private_ingress_config
