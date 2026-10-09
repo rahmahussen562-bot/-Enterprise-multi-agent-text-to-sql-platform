@@ -16,6 +16,10 @@ assert services['fastapi']['cap_drop']==['ALL']
 for name, service in services.items():
     for mount in service.get('tmpfs', []):
         assert isinstance(mount, str) and mount.split(':', 1)[0].startswith('/'), f'{name}: tmpfs entries must have absolute mount paths'
+    secret_targets = {mount if isinstance(mount, str) else mount.get('target', mount['source']) for mount in service.get('secrets', [])}
+    for setting, value in service.get('environment', {}).items():
+        if setting.endswith('_FILE') and isinstance(value, str) and value.startswith('/run/secrets/'):
+            assert value.removeprefix('/run/secrets/') in secret_targets, f'{name}: {setting} does not resolve to a mounted secret'
 assert compose['networks']['database']['internal']
 assert 'ssl=on' in services['fincore_postgres']['command']
 assert '--token-file' in services['cloudflared']['command']

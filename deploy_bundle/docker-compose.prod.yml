@@ -75,7 +75,8 @@ services:
       - -c
       - log_min_error_statement=panic
     secrets:
-      - pg_password
+      - source: pg_password
+        target: postgres-password
       - source: pg_server_cert
         target: postgres-server.crt
       - source: pg_server_key
