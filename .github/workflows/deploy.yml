@@ -169,12 +169,15 @@ jobs:
       SENTINEL_SECRETS_DIR: ${{ vars.SENTINEL_SECRETS_DIR }}
       API_ORIGIN: ${{ vars.API_ORIGIN || 'https://api.sentinelsql.internal' }}
       SENTINEL_EDGE_CA_FILE: ${{ vars.SENTINEL_EDGE_CA_FILE }}
-      DOCKER_CONFIG: ${{ runner.temp }}/sentinelsql-docker-auth
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           clean: false
           persist-credentials: false
+      - name: Prepare ephemeral registry credential directory
+        run: |
+          mkdir -p "$RUNNER_TEMP/sentinelsql-docker-auth"
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/sentinelsql-docker-auth" >> "$GITHUB_ENV"
       - name: Authenticate container registry
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
